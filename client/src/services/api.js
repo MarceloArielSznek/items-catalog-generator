@@ -1,0 +1,75 @@
+import config from "../config.js";
+
+async function request(url, options = {}) {
+  const response = await fetch(url, options);
+  if (options.raw) return response;
+
+  const result = await response.json();
+  if (!response.ok) {
+    throw new Error(result.error || `Server error (${response.status})`);
+  }
+  return result;
+}
+
+export async function createScene({ name, background, logo, logoPosition }) {
+  const formData = new FormData();
+  formData.append("name", name);
+  formData.append("background", background);
+  formData.append("logo", logo);
+  if (logoPosition) formData.append("logoPosition", logoPosition);
+
+  return request(`${config.API_BASE_URL}/scenes`, { method: "POST", body: formData });
+}
+
+export async function listScenes() {
+  return request(`${config.API_BASE_URL}/scenes`);
+}
+
+export async function getSceneById(id) {
+  return request(`${config.API_BASE_URL}/scenes/${id}`);
+}
+
+export async function deleteScene(id) {
+  return request(`${config.API_BASE_URL}/scenes/${id}`, { method: "DELETE" });
+}
+
+export async function generateCatalogImage({ background, item, logo, itemName, instruction, logoPosition, mode, format }) {
+  const formData = new FormData();
+  formData.append("background", background);
+  formData.append("item", item);
+  formData.append("logo", logo);
+  if (itemName?.trim()) formData.append("itemName", itemName.trim());
+  if (instruction?.trim()) formData.append("instruction", instruction.trim());
+  if (logoPosition) formData.append("logoPosition", logoPosition);
+  if (mode) formData.append("mode", mode);
+  if (format) formData.append("format", format);
+
+  return request(`${config.API_BASE_URL}/generate-catalog-image`, { method: "POST", body: formData });
+}
+
+export async function generateWithScene({ sceneId, item, itemName, instruction, logoPosition, mode, format }) {
+  const formData = new FormData();
+  formData.append("item", item);
+  if (itemName?.trim()) formData.append("itemName", itemName.trim());
+  if (instruction?.trim()) formData.append("instruction", instruction.trim());
+  if (logoPosition) formData.append("logoPosition", logoPosition);
+  if (mode) formData.append("mode", mode);
+  if (format) formData.append("format", format);
+
+  return request(`${config.API_BASE_URL}/generate-with-scene/${sceneId}`, { method: "POST", body: formData });
+}
+
+export async function downloadZip(filenames) {
+  const response = await fetch(`${config.API_BASE_URL}/download-zip`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filenames }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || "Failed to download ZIP");
+  }
+
+  return response.blob();
+}
