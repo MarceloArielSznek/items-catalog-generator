@@ -11,17 +11,18 @@ import {
   DEFAULT_MODE,
   OUTPUT_FORMATS,
   DEFAULT_FORMAT,
+  COMPOSITION_DEFAULTS,
 } from "../../../shared/constants/imageRules.js";
 
-async function runQuickPipeline({ backgroundPath, itemPath }) {
+async function runQuickPipeline({ backgroundPath, itemPath, itemScale, shadowIntensity }) {
   const { outputPath: transparentPath } = await removeItemBackground(itemPath);
-  const result = await composeFullImage({ backgroundPath, transparentItemPath: transparentPath });
+  const result = await composeFullImage({ backgroundPath, transparentItemPath: transparentPath, itemScale, shadowIntensity });
   return { ...result, tempFiles: [transparentPath], usage: null, prompt: null, stub: false };
 }
 
-async function runStandardPipeline({ backgroundPath, itemPath, itemName, instruction }) {
+async function runStandardPipeline({ backgroundPath, itemPath, itemName, instruction, itemScale }) {
   const { outputPath: transparentPath } = await removeItemBackground(itemPath);
-  const { outputPath: precompPath } = await composePreview({ backgroundPath, transparentItemPath: transparentPath });
+  const { outputPath: precompPath } = await composePreview({ backgroundPath, transparentItemPath: transparentPath, itemScale });
   const refined = await refineComposedImage({ composedImagePath: precompPath, itemName, instruction });
 
   return {
@@ -73,14 +74,24 @@ function parseOptions(body) {
   let format = body.format || DEFAULT_FORMAT;
   if (!OUTPUT_FORMATS[format]) format = DEFAULT_FORMAT;
 
-  return { logoPosition, mode, format, itemName: body.itemName, instruction: body.instruction };
+  let itemScale = parseFloat(body.itemScale);
+  if (isNaN(itemScale) || itemScale < 0.05 || itemScale > 0.9) {
+    itemScale = COMPOSITION_DEFAULTS.itemScale;
+  }
+
+  let shadowIntensity = parseFloat(body.shadowIntensity);
+  if (isNaN(shadowIntensity) || shadowIntensity < 0 || shadowIntensity > 1) {
+    shadowIntensity = 1;
+  }
+
+  return { logoPosition, mode, format, itemName: body.itemName, instruction: body.instruction, itemScale, shadowIntensity };
 }
 
-async function runGeneration({ backgroundPath, itemPath, logoPath, logoPosition, mode, format, itemName, instruction }) {
+async function runGeneration({ backgroundPath, itemPath, logoPath, logoPosition, mode, format, itemName, instruction, itemScale, shadowIntensity }) {
   const start = Date.now();
 
   const pipeline = PIPELINES[mode];
-  const result = await pipeline({ backgroundPath, itemPath, itemName, instruction });
+  const result = await pipeline({ backgroundPath, itemPath, itemName, instruction, itemScale, shadowIntensity });
   const tempFiles = result.tempFiles || [];
 
   if (result.stub || !result.outputPath) {
@@ -133,17 +144,17 @@ export async function handleGenerateCatalogImage(req, res, next) {
     const logoPath = getUploadedFilePath(logoFile);
     uploadedPaths.push(backgroundPath, itemPath, logoPath);
 
-    const { logoPosition, mode, format, itemName, instruction } = parseOptions(req.body);
+    const { logoPosition, mode, format, itemName, instruction, itemScale, shadowIntensity } = parseOptions(req.body);
 
     logger.info("Generate catalog image request", {
-      mode, format, logoPosition,
+      mode, format, logoPosition, itemScale, shadowIntensity,
       background: backgroundFile.originalname,
       item: itemFile.originalname,
       logo: logoFile.originalname,
       itemName: itemName || "(none)",
     });
 
-    const result = await runGeneration({ backgroundPath, itemPath, logoPath, logoPosition, mode, format, itemName, instruction });
+    const result = await runGeneration({ backgroundPath, itemPath, logoPath, logoPosition, mode, format, itemName, instruction, itemScale, shadowIntensity });
     tempFiles = result.tempFiles;
 
     res.status(200).json({ success: true, data: result.data });
@@ -151,6 +162,29 @@ export async function handleGenerateCatalogImage(req, res, next) {
     next(err);
   } finally {
     cleanupFiles([...uploadedPaths, ...tempFiles]);
+  }
+}
+
+export async function handleRemoveBackground(req, res, next) {
+  const uploadedPaths = [];
+  try {
+    const itemFile = req.files?.item?.[0];
+    if (!itemFile) {
+      return res.status(400).json({ success: false, error: "Item file is required" });
+    }
+
+    const itemPath = getUploadedFilePath(itemFile);
+    uploadedPaths.push(itemPath);
+
+    const { outputPath, outputFilename } = await removeItemBackground(itemPath);
+    const imageUrl = buildPublicUrl(outputFilename);
+
+    logger.info("Background removal for preview", { outputFilename });
+    res.status(200).json({ success: true, data: { imageUrl, filename: outputFilename } });
+  } catch (err) {
+    next(err);
+  } finally {
+    cleanupFiles(uploadedPaths);
   }
 }
 
@@ -173,13 +207,13 @@ export async function handleGenerateWithScene(req, res, next) {
     const itemPath = getUploadedFilePath(itemFile);
     uploadedPaths.push(itemPath);
 
-    const { mode, format, itemName, instruction } = parseOptions(req.body);
+    const { mode, format, itemName, instruction, itemScale, shadowIntensity } = parseOptions(req.body);
     const logoPosition = req.body.logoPosition && LOGO_POSITIONS.includes(req.body.logoPosition)
       ? req.body.logoPosition
       : scene.logoPosition;
 
     logger.info("Generate with scene", {
-      sceneId, mode, format, logoPosition,
+      sceneId, mode, format, logoPosition, itemScale, shadowIntensity,
       item: itemFile.originalname,
       itemName: itemName || "(none)",
     });
@@ -189,7 +223,7 @@ export async function handleGenerateWithScene(req, res, next) {
       itemPath,
       logoPath: scene.logoPath,
       logoPosition,
-      mode, format, itemName, instruction,
+      mode, format, itemName, instruction, itemScale, shadowIntensity,
     });
     tempFiles = result.tempFiles;
 

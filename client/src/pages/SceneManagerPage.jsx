@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { listScenes, createScene, deleteScene } from "../services/api.js";
+import { listScenes, createScene, deleteScene, updateScene } from "../services/api.js";
 import LogoPositionGrid from "../components/LogoPositionGrid.jsx";
 import { validateImageFile, createPreviewUrl, revokePreviewUrl } from "../utils/fileHelpers.js";
 
@@ -77,7 +77,51 @@ export default function SceneManagerPage() {
     setLogoPosition("bottom-right");
   }
 
+  const [editingScene, setEditingScene] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editLogoPosition, setEditLogoPosition] = useState("bottom-right");
+  const [editBgFile, setEditBgFile] = useState(null);
+  const [editLogoFile, setEditLogoFile] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const editBgRef = useRef(null);
+  const editLogoRef = useRef(null);
+
+  function startEdit(scene) {
+    setEditingScene(scene.id);
+    setEditName(scene.name);
+    setEditLogoPosition(scene.logoPosition || "bottom-right");
+    setEditBgFile(null);
+    setEditLogoFile(null);
+  }
+
+  function cancelEdit() {
+    setEditingScene(null);
+    setEditBgFile(null);
+    setEditLogoFile(null);
+  }
+
+  async function handleSaveEdit(e) {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await updateScene(editingScene, {
+        name: editName,
+        logoPosition: editLogoPosition,
+        background: editBgFile,
+        logo: editLogoFile,
+      });
+      cancelEdit();
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleDelete(id) {
+    if (!confirm("Delete this scene?")) return;
     try {
       await deleteScene(id);
       setScenes((prev) => prev.filter((s) => s.id !== id));
@@ -175,22 +219,52 @@ export default function SceneManagerPage() {
         <div className="scenes-grid">
           {scenes.map((scene) => (
             <div key={scene.id} className="scene-card">
-              <div className="scene-card__bg">
-                <img src={`/scenes/${scene.id}/${scene.backgroundFile}`} alt={scene.name} />
-                <img className="scene-card__logo" src={`/scenes/${scene.id}/${scene.logoFile}`} alt="Logo" />
-              </div>
-              <div className="scene-card__body">
-                <span className="scene-card__name">{scene.name}</span>
-                <span className="scene-card__date">{new Date(scene.createdAt).toLocaleDateString()}</span>
-              </div>
-              <div className="scene-card__actions">
-                <button className="btn btn--primary btn--sm" onClick={() => navigate(`/generate/${scene.id}`)}>
-                  Use Scene
-                </button>
-                <button className="btn btn--danger btn--sm" onClick={() => handleDelete(scene.id)}>
-                  Delete
-                </button>
-              </div>
+              {editingScene === scene.id ? (
+                <form className="scene-card__edit" onSubmit={handleSaveEdit}>
+                  <div className="input-group" style={{ marginBottom: 12 }}>
+                    <input className="input-group__input" value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Scene name" />
+                  </div>
+                  <div className="scene-card__edit-uploads">
+                    <button type="button" className="btn btn--secondary btn--sm" onClick={() => editBgRef.current?.click()}>
+                      {editBgFile ? "Background ✓" : "Change Background"}
+                    </button>
+                    <input ref={editBgRef} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => setEditBgFile(e.target.files?.[0] || null)} />
+                    <button type="button" className="btn btn--secondary btn--sm" onClick={() => editLogoRef.current?.click()}>
+                      {editLogoFile ? "Logo ✓" : "Change Logo"}
+                    </button>
+                    <input ref={editLogoRef} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => setEditLogoFile(e.target.files?.[0] || null)} />
+                  </div>
+                  <div style={{ margin: "12px 0" }}>
+                    <LogoPositionGrid value={editLogoPosition} onChange={setEditLogoPosition} />
+                  </div>
+                  <div className="scene-card__actions">
+                    <button type="submit" className="btn btn--primary btn--sm" disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+                    <button type="button" className="btn btn--secondary btn--sm" onClick={cancelEdit}>Cancel</button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  <div className="scene-card__bg">
+                    <img src={`/scenes/${scene.id}/${scene.backgroundFile}`} alt={scene.name} />
+                    <img className="scene-card__logo" src={`/scenes/${scene.id}/${scene.logoFile}`} alt="Logo" />
+                  </div>
+                  <div className="scene-card__body">
+                    <span className="scene-card__name">{scene.name}</span>
+                    <span className="scene-card__date">{new Date(scene.createdAt).toLocaleDateString()}</span>
+                  </div>
+                  <div className="scene-card__actions">
+                    <button className="btn btn--primary btn--sm" onClick={() => navigate(`/generate/${scene.id}`)}>
+                      Use Scene
+                    </button>
+                    <button className="btn btn--secondary btn--sm" onClick={() => startEdit(scene)}>
+                      Edit
+                    </button>
+                    <button className="btn btn--danger btn--sm" onClick={() => handleDelete(scene.id)}>
+                      Delete
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           ))}
         </div>

@@ -83,6 +83,38 @@ export async function getScene(id) {
   }
 }
 
+export async function updateScene(id, { name, logoPosition, backgroundFile, logoFile }) {
+  try {
+    const raw = await fsp.readFile(metaPath(id), "utf-8");
+    const meta = JSON.parse(raw);
+    const dir = scenePath(id);
+
+    if (name != null) meta.name = name;
+    if (logoPosition != null) meta.logoPosition = logoPosition;
+
+    if (backgroundFile) {
+      const bgExt = preserveExtension(backgroundFile.originalname);
+      const bgFilename = `background${bgExt}`;
+      await fsp.copyFile(backgroundFile.path, path.join(dir, bgFilename));
+      meta.backgroundFile = bgFilename;
+    }
+
+    if (logoFile) {
+      const logoExt = preserveExtension(logoFile.originalname);
+      const logoFilename = `logo${logoExt}`;
+      await fsp.copyFile(logoFile.path, path.join(dir, logoFilename));
+      meta.logoFile = logoFilename;
+    }
+
+    meta.updatedAt = new Date().toISOString();
+    await fsp.writeFile(metaPath(id), JSON.stringify(meta, null, 2));
+    logger.info("Scene updated", { id, name: meta.name });
+    return meta;
+  } catch {
+    return null;
+  }
+}
+
 export async function deleteScene(id) {
   const dir = scenePath(id);
   try {

@@ -34,10 +34,10 @@ async function prepareLogo(logoPath, canvasWidth) {
   return { buffer: logoBuffer, width: meta.width, height: meta.height };
 }
 
-async function createContactShadow(itemWidth, canvasWidth, canvasHeight) {
+async function createContactShadow(itemWidth, canvasWidth, canvasHeight, intensity = 1) {
   const shadowH = Math.round(canvasHeight * COMPOSITION_DEFAULTS.contactShadowHeight);
   const shadowW = Math.round(itemWidth * 0.85);
-  const opacity = COMPOSITION_DEFAULTS.contactShadowOpacity;
+  const opacity = COMPOSITION_DEFAULTS.contactShadowOpacity * intensity;
 
   const svg = `<svg width="${shadowW}" height="${shadowH}">
     <defs>
@@ -54,8 +54,10 @@ async function createContactShadow(itemWidth, canvasWidth, canvasHeight) {
   return { buffer: Buffer.from(svg), width: shadowW, height: shadowH };
 }
 
-async function createAmbientShadow(itemBuffer, itemWidth, itemHeight) {
-  const { ambientShadowBlur, ambientShadowOpacity, ambientShadowSpread } = COMPOSITION_DEFAULTS;
+async function createAmbientShadow(itemBuffer, itemWidth, itemHeight, intensity = 1) {
+  const { ambientShadowBlur: baseBlur, ambientShadowOpacity: baseOpacity, ambientShadowSpread } = COMPOSITION_DEFAULTS;
+  const ambientShadowBlur = Math.round(baseBlur * intensity);
+  const ambientShadowOpacity = baseOpacity * intensity;
   const spreadW = Math.round(itemWidth * ambientShadowSpread);
   const spreadH = Math.round(itemHeight * ambientShadowSpread);
 
@@ -77,18 +79,20 @@ async function createAmbientShadow(itemBuffer, itemWidth, itemHeight) {
   return { buffer: shadow, width: spreadW, height: spreadH };
 }
 
-export async function composeFullImage({ backgroundPath, transparentItemPath }) {
-  logger.info("Full programmatic composition (enhanced, no logo)");
+export async function composeFullImage({ backgroundPath, transparentItemPath, itemScale, shadowIntensity }) {
+  const scale = itemScale || COMPOSITION_DEFAULTS.itemScale;
+  const shadow = shadowIntensity != null ? shadowIntensity : 1;
+  logger.info("Full programmatic composition (enhanced, no logo)", { itemScale: scale, shadowIntensity: shadow });
   const start = Date.now();
 
   const bgMeta = await sharp(backgroundPath).metadata();
   const canvasW = bgMeta.width;
   const canvasH = bgMeta.height;
 
-  const maxItemW = Math.round(canvasW * COMPOSITION_DEFAULTS.itemScale);
-  const maxItemH = Math.round(canvasH * COMPOSITION_DEFAULTS.itemScale);
+  const maxItemW = Math.round(canvasW * scale);
+  const maxItemH = Math.round(canvasH * scale);
   const itemBuffer = await sharp(transparentItemPath)
-    .resize({ width: maxItemW, height: maxItemH, fit: "inside", withoutEnlargement: true })
+    .resize({ width: maxItemW, height: maxItemH, fit: "inside" })
     .toBuffer();
   const itemMeta = await sharp(itemBuffer).metadata();
 
@@ -97,30 +101,32 @@ export async function composeFullImage({ backgroundPath, transparentItemPath }) 
 
   const layers = [];
 
-  try {
-    const ambient = await createAmbientShadow(itemBuffer, itemMeta.width, itemMeta.height);
-    const ambLeft = itemLeft - Math.round((ambient.width - itemMeta.width) / 2);
-    const ambTop = itemTop - Math.round((ambient.height - itemMeta.height) / 2) + COMPOSITION_DEFAULTS.ambientShadowOffsetY;
-    layers.push({
-      input: ambient.buffer,
-      left: Math.max(0, ambLeft),
-      top: Math.max(0, ambTop),
-    });
-  } catch {
-    logger.warn("Ambient shadow failed, skipping");
-  }
+  if (shadow > 0) {
+    try {
+      const ambient = await createAmbientShadow(itemBuffer, itemMeta.width, itemMeta.height, shadow);
+      const ambLeft = itemLeft - Math.round((ambient.width - itemMeta.width) / 2);
+      const ambTop = itemTop - Math.round((ambient.height - itemMeta.height) / 2) + COMPOSITION_DEFAULTS.ambientShadowOffsetY;
+      layers.push({
+        input: ambient.buffer,
+        left: Math.max(0, ambLeft),
+        top: Math.max(0, ambTop),
+      });
+    } catch {
+      logger.warn("Ambient shadow failed, skipping");
+    }
 
-  try {
-    const contact = await createContactShadow(itemMeta.width, canvasW, canvasH);
-    const contactLeft = Math.round((canvasW - contact.width) / 2);
-    const contactTop = itemTop + itemMeta.height - Math.round(contact.height * 0.3);
-    layers.push({
-      input: contact.buffer,
-      left: Math.max(0, contactLeft),
-      top: Math.min(canvasH - contact.height, Math.max(0, contactTop)),
-    });
-  } catch {
-    logger.warn("Contact shadow failed, skipping");
+    try {
+      const contact = await createContactShadow(itemMeta.width, canvasW, canvasH, shadow);
+      const contactLeft = Math.round((canvasW - contact.width) / 2);
+      const contactTop = itemTop + itemMeta.height - Math.round(contact.height * 0.3);
+      layers.push({
+        input: contact.buffer,
+        left: Math.max(0, contactLeft),
+        top: Math.min(canvasH - contact.height, Math.max(0, contactTop)),
+      });
+    } catch {
+      logger.warn("Contact shadow failed, skipping");
+    }
   }
 
   layers.push({ input: itemBuffer, left: itemLeft, top: Math.max(0, itemTop) });
@@ -156,15 +162,16 @@ export async function overlayLogo({ scenePath, logoPath, logoPosition = DEFAULT_
   return { outputFilename, outputPath };
 }
 
-export async function composePreview({ backgroundPath, transparentItemPath }) {
+export async function composePreview({ backgroundPath, transparentItemPath, itemScale }) {
+  const scale = itemScale || COMPOSITION_DEFAULTS.itemScale;
   const bgMeta = await sharp(backgroundPath).metadata();
   const canvasW = bgMeta.width;
   const canvasH = bgMeta.height;
 
-  const maxItemW = Math.round(canvasW * COMPOSITION_DEFAULTS.itemScale);
-  const maxItemH = Math.round(canvasH * COMPOSITION_DEFAULTS.itemScale);
+  const maxItemW = Math.round(canvasW * scale);
+  const maxItemH = Math.round(canvasH * scale);
   const itemBuffer = await sharp(transparentItemPath)
-    .resize({ width: maxItemW, height: maxItemH, fit: "inside", withoutEnlargement: true })
+    .resize({ width: maxItemW, height: maxItemH, fit: "inside" })
     .toBuffer();
   const itemMeta = await sharp(itemBuffer).metadata();
 

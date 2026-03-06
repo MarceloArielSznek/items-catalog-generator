@@ -47,7 +47,7 @@ export const DEFAULT_FORMAT = "square";
 export const COMPOSITION_DEFAULTS = {
   logoScale: 0.30,
   logoMargin: 40,
-  itemScale: 0.45,
+  itemScale: 0.30,
   itemVerticalBias: 0.55,
   contactShadowHeight: 0.06,
   contactShadowOpacity: 0.5,

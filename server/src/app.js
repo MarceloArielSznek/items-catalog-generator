@@ -4,6 +4,7 @@ import env from "./config/env.js";
 import imageRoutes from "./routes/imageRoutes.js";
 import sceneRoutes from "./routes/sceneRoutes.js";
 import downloadRoutes from "./routes/downloadRoutes.js";
+import libraryRoutes from "./routes/libraryRoutes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
 const app = express();
@@ -17,6 +18,7 @@ app.use("/scenes", express.static(env.SCENES_DIR));
 app.use("/api", imageRoutes);
 app.use("/api/scenes", sceneRoutes);
 app.use("/api", downloadRoutes);
+app.use("/api/library", libraryRoutes);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });

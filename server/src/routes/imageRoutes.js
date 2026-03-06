@@ -6,7 +6,7 @@ import env from "../config/env.js";
 import { UPLOAD_FIELDS } from "../../../shared/constants/imageRules.js";
 import { isAllowedMimeType } from "../utils/fileValidation.js";
 import { validateGenerateRequest } from "../middleware/validateGenerateRequest.js";
-import { handleGenerateCatalogImage, handleGenerateWithScene } from "../controllers/imageController.js";
+import { handleGenerateCatalogImage, handleGenerateWithScene, handleRemoveBackground } from "../controllers/imageController.js";
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, env.UPLOAD_DIR),
@@ -49,6 +49,12 @@ router.post(
   "/generate-with-scene/:sceneId",
   uploadItem,
   handleGenerateWithScene,
+);
+
+router.post(
+  "/remove-background",
+  uploadItem,
+  handleRemoveBackground,
 );
 
 export default router;

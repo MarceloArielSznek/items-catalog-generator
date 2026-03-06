@@ -1,14 +1,16 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getSceneById, generateWithScene, downloadZip } from "../services/api.js";
+import { getSceneById, generateWithScene, downloadZip, removeBackground } from "../services/api.js";
+import SaveItemModal from "../components/SaveItemModal.jsx";
+import BulkSaveModal from "../components/BulkSaveModal.jsx";
 import { validateImageFile, createPreviewUrl, revokePreviewUrl } from "../utils/fileHelpers.js";
 import ModeSelector from "../components/ModeSelector.jsx";
 import FormatSelector from "../components/FormatSelector.jsx";
-import LogoPositionGrid from "../components/LogoPositionGrid.jsx";
 import GenerateButton from "../components/GenerateButton.jsx";
-import ResultPanel from "../components/ResultPanel.jsx";
-import BulkUploadZone from "../components/BulkUploadZone.jsx";
+import BulkCarousel from "../components/BulkCarousel.jsx";
 import BulkResultsPanel from "../components/BulkResultsPanel.jsx";
+import ItemPreviewComposite from "../components/ItemPreviewComposite.jsx";
+import { COMPOSITION_DEFAULTS } from "../../../shared/constants/imageRules.js";
 
 export default function GeneratorPage() {
   const { sceneId } = useParams();
@@ -20,20 +22,25 @@ export default function GeneratorPage() {
 
   const [mode, setMode] = useState("quick");
   const [format, setFormat] = useState("square");
-  const [logoPosition, setLogoPosition] = useState(null);
-  const [itemName, setItemName] = useState("");
   const [instruction, setInstruction] = useState("");
 
   const [itemFile, setItemFile] = useState(null);
   const [itemPreview, setItemPreview] = useState(null);
+  const [transparentUrl, setTransparentUrl] = useState(null);
+  const [removingBg, setRemovingBg] = useState(false);
+  const [itemScale, setItemScale] = useState(COMPOSITION_DEFAULTS.itemScale);
+  const [shadowIntensity, setShadowIntensity] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+  const [showSaveModal, setShowSaveModal] = useState(false);
 
   const [bulkItems, setBulkItems] = useState([]);
+  const [bulkActiveIndex, setBulkActiveIndex] = useState(0);
   const [bulkResults, setBulkResults] = useState([]);
   const [bulkRunning, setBulkRunning] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 });
+  const [showBulkSaveModal, setShowBulkSaveModal] = useState(false);
   const bulkAbortRef = useRef(false);
 
   const itemRef = useRef(null);
@@ -43,7 +50,6 @@ export default function GeneratorPage() {
       try {
         const res = await getSceneById(sceneId);
         setScene(res.data);
-        setLogoPosition(res.data.logoPosition);
       } catch {
         navigate("/");
       } finally {
@@ -52,7 +58,7 @@ export default function GeneratorPage() {
     })();
   }, [sceneId, navigate]);
 
-  const handleItemSelect = useCallback((e) => {
+  const handleItemSelect = useCallback(async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const err = validateImageFile(file);
@@ -61,14 +67,27 @@ export default function GeneratorPage() {
     if (itemPreview) revokePreviewUrl(itemPreview);
     setItemFile(file);
     setItemPreview(createPreviewUrl(file));
+    setTransparentUrl(null);
     setResult(null);
+    setItemScale(COMPOSITION_DEFAULTS.itemScale);
     e.target.value = "";
+
+    setRemovingBg(true);
+    try {
+      const res = await removeBackground(file);
+      setTransparentUrl(res.data.imageUrl);
+    } catch (bgErr) {
+      setError("Background removal failed: " + bgErr.message);
+    } finally {
+      setRemovingBg(false);
+    }
   }, [itemPreview]);
 
   const clearItem = useCallback(() => {
     if (itemPreview) revokePreviewUrl(itemPreview);
     setItemFile(null);
     setItemPreview(null);
+    setTransparentUrl(null);
   }, [itemPreview]);
 
   const handleGenerate = useCallback(async () => {
@@ -78,15 +97,16 @@ export default function GeneratorPage() {
     setLoading(true);
     try {
       const res = await generateWithScene({
-        sceneId, item: itemFile, itemName, instruction, logoPosition, mode, format,
+        sceneId, item: itemFile, itemName: "", instruction, logoPosition: scene.logoPosition, mode, format, itemScale, shadowIntensity,
       });
       setResult(res.data);
+      setShowSaveModal(true);
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
-  }, [sceneId, itemFile, itemName, instruction, logoPosition, mode, format]);
+  }, [sceneId, scene, itemFile, instruction, mode, format, itemScale, shadowIntensity]);
 
   const handleBulkGenerate = useCallback(async () => {
     if (bulkItems.length === 0) return;
@@ -102,19 +122,32 @@ export default function GeneratorPage() {
       const item = bulkItems[i];
       try {
         const res = await generateWithScene({
-          sceneId, item: item.file, itemName: item.name || "", instruction, logoPosition, mode, format,
+          sceneId, item: item.file, itemName: item.name || "", instruction,
+          logoPosition: scene.logoPosition, mode, format,
+          itemScale: item.itemScale, shadowIntensity: item.shadowIntensity,
         });
-        results.push({ ...res.data, originalName: item.file.name, status: "success" });
+        results.push({ ...res.data, originalName: item.file.name, status: "success",
+          itemScale: item.itemScale, shadowIntensity: item.shadowIntensity });
       } catch (err) {
         results.push({ originalName: item.file.name, status: "error", error: err.message });
       }
       setBulkResults([...results]);
     }
     setBulkRunning(false);
-  }, [bulkItems, sceneId, instruction, logoPosition, mode, format]);
+    if (results.some((r) => r.status === "success")) {
+      setShowBulkSaveModal(true);
+    }
+  }, [bulkItems, sceneId, scene, instruction, mode, format]);
 
   const handleBulkAbort = useCallback(() => {
     bulkAbortRef.current = true;
+  }, []);
+
+  const resetBulk = useCallback(() => {
+    setBulkItems([]);
+    setBulkActiveIndex(0);
+    setBulkResults([]);
+    setShowBulkSaveModal(false);
   }, []);
 
   const handleDownloadAll = useCallback(async () => {
@@ -137,8 +170,9 @@ export default function GeneratorPage() {
     clearItem();
     setResult(null);
     setError(null);
-    setItemName("");
     setInstruction("");
+    setItemScale(COMPOSITION_DEFAULTS.itemScale);
+    setShadowIntensity(1);
   }, [clearItem]);
 
   if (sceneLoading) return <main className="page"><p>Loading scene...</p></main>;
@@ -153,15 +187,13 @@ export default function GeneratorPage() {
         </div>
       </div>
 
-      <div className="scene-preview">
-        <div className="scene-preview__images">
-          <div className="scene-preview__bg">
-            <img src={scene.backgroundUrl} alt="Background" />
-          </div>
-          <div className="scene-preview__logo">
-            <img src={scene.logoUrl} alt="Logo" />
-          </div>
-        </div>
+      <div className="scene-preview scene-preview--banner">
+        <img className="scene-preview__bg-img" src={scene.backgroundUrl} alt="Background" />
+        <img
+          className={`scene-preview__logo-overlay scene-preview__logo--${scene.logoPosition || "bottom-right"}`}
+          src={scene.logoUrl}
+          alt="Logo"
+        />
       </div>
 
       <div className="tabs">
@@ -176,41 +208,53 @@ export default function GeneratorPage() {
       <ModeSelector value={mode} onChange={setMode} />
       <FormatSelector value={format} onChange={setFormat} />
 
-      <div className="options-row">
-        {tab === "single" && (
+      {mode !== "quick" && (
+        <div className="options-row">
           <div className="input-group">
-            <label className="input-group__label" htmlFor="itemName">Item Name (optional)</label>
-            <input id="itemName" className="input-group__input" type="text" placeholder="e.g. Fiberglass Batt Insulation" value={itemName} onChange={(e) => setItemName(e.target.value)} />
+            <label className="input-group__label" htmlFor="instruction">Extra Instructions (optional)</label>
+            <input id="instruction" className="input-group__input" type="text" placeholder="e.g. Place item on the left side" value={instruction} onChange={(e) => setInstruction(e.target.value)} />
           </div>
-        )}
-        <div className="input-group">
-          <label className="input-group__label" htmlFor="instruction">Extra Instructions (optional)</label>
-          <input id="instruction" className="input-group__input" type="text" placeholder="e.g. Place item on the left side" value={instruction} onChange={(e) => setInstruction(e.target.value)} />
         </div>
-      </div>
-
-      <div className="options-row options-row--logo">
-        <LogoPositionGrid value={logoPosition} onChange={setLogoPosition} />
-      </div>
+      )}
 
       {tab === "single" ? (
         <>
-          <div className="upload-grid upload-grid--single">
-            <div
-              className={`upload-field ${itemFile ? "upload-field--has-file" : ""}`}
-              onClick={() => itemRef.current?.click()}
-              role="button" tabIndex={0}
-            >
-              {itemFile && <button className="upload-field__clear" onClick={(e) => { e.stopPropagation(); clearItem(); }} title="Remove">✕</button>}
-              <span className="upload-field__icon">📦</span>
-              <div className="upload-field__label">Item / Product</div>
-              <div className="upload-field__hint">{itemFile ? itemFile.name : "Upload the product image"}</div>
-              <input ref={itemRef} className="upload-field__input" type="file" accept="image/jpeg,image/png,image/webp" onChange={handleItemSelect} />
-              {itemPreview && <div className="image-preview"><img className="image-preview__img" src={itemPreview} alt="Item preview" /></div>}
+          {!itemFile && (
+            <div className="upload-grid upload-grid--single">
+              <div
+                className="upload-field"
+                onClick={() => itemRef.current?.click()}
+                role="button" tabIndex={0}
+              >
+                <span className="upload-field__icon">📦</span>
+                <div className="upload-field__label">Item / Product</div>
+                <div className="upload-field__hint">Upload the product image</div>
+                <input ref={itemRef} className="upload-field__input" type="file" accept="image/jpeg,image/png,image/webp" onChange={handleItemSelect} />
+              </div>
             </div>
-          </div>
+          )}
 
-          <GenerateButton canGenerate={!!itemFile && !loading} loading={loading} onClick={handleGenerate} />
+          {removingBg && (
+            <div className="removing-bg-banner">
+              <div className="removing-bg-banner__spinner" />
+              <span>Removing background…</span>
+            </div>
+          )}
+
+          {transparentUrl && !removingBg && (
+            <ItemPreviewComposite
+              backgroundUrl={scene.backgroundUrl}
+              itemPreviewUrl={transparentUrl}
+              scale={itemScale}
+              onScaleChange={setItemScale}
+              shadowIntensity={shadowIntensity}
+              onShadowIntensityChange={setShadowIntensity}
+            />
+          )}
+
+          {itemFile && (
+            <GenerateButton canGenerate={!loading && !removingBg} loading={loading} onClick={handleGenerate} />
+          )}
 
           {error && (
             <div className="error-banner">
@@ -219,11 +263,40 @@ export default function GeneratorPage() {
             </div>
           )}
 
-          <ResultPanel result={result} onReset={resetSingle} />
+          {result && !showSaveModal && (
+            <div className="result-inline">
+              <span className="result-inline__text">Image generated successfully</span>
+              <a className="btn btn--ghost btn--sm" href={result.imageUrl} download={result.filename} target="_blank" rel="noreferrer">Download</a>
+              <button className="btn btn--ghost btn--sm" onClick={() => setShowSaveModal(true)}>Save to Library</button>
+              <button className="btn btn--ghost btn--sm" onClick={resetSingle}>New Image</button>
+            </div>
+          )}
+
+          {showSaveModal && result && (
+            <SaveItemModal
+              result={result}
+              sceneId={sceneId}
+              sceneName={scene.name}
+              itemName=""
+              itemScale={itemScale}
+              shadowIntensity={shadowIntensity}
+              mode={mode}
+              format={format}
+              onSaved={resetSingle}
+              onSkip={() => setShowSaveModal(false)}
+            />
+          )}
         </>
       ) : (
         <>
-          <BulkUploadZone items={bulkItems} onChange={setBulkItems} disabled={bulkRunning} />
+          <BulkCarousel
+            items={bulkItems}
+            onChange={setBulkItems}
+            activeIndex={bulkActiveIndex}
+            onActiveIndexChange={setBulkActiveIndex}
+            backgroundUrl={scene.backgroundUrl}
+            disabled={bulkRunning}
+          />
 
           <div className="bulk-actions">
             {!bulkRunning ? (
@@ -237,6 +310,15 @@ export default function GeneratorPage() {
             )}
           </div>
 
+          {bulkRunning && (
+            <BulkResultsPanel
+              results={bulkResults}
+              progress={bulkProgress}
+              running={bulkRunning}
+              onDownloadAll={handleDownloadAll}
+            />
+          )}
+
           {error && (
             <div className="error-banner">
               <span className="error-banner__icon">!</span>
@@ -244,12 +326,17 @@ export default function GeneratorPage() {
             </div>
           )}
 
-          <BulkResultsPanel
-            results={bulkResults}
-            progress={bulkProgress}
-            running={bulkRunning}
-            onDownloadAll={handleDownloadAll}
-          />
+          {showBulkSaveModal && bulkResults.length > 0 && (
+            <BulkSaveModal
+              results={bulkResults}
+              sceneId={sceneId}
+              sceneName={scene.name}
+              mode={mode}
+              format={format}
+              onAllSaved={resetBulk}
+              onSkip={() => setShowBulkSaveModal(false)}
+            />
+          )}
         </>
       )}
     </main>

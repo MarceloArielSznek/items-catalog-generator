@@ -4,7 +4,7 @@ import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import env from "../config/env.js";
 import { isAllowedMimeType } from "../utils/fileValidation.js";
-import { createScene, listScenes, getScene, deleteScene } from "../services/sceneService.js";
+import { createScene, listScenes, getScene, updateScene, deleteScene } from "../services/sceneService.js";
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, env.UPLOAD_DIR),
@@ -63,6 +63,25 @@ router.get("/", async (_req, res, next) => {
 router.get("/:id", async (req, res, next) => {
   try {
     const scene = await getScene(req.params.id);
+    if (!scene) return res.status(404).json({ success: false, error: "Scene not found" });
+    res.json({ success: true, data: scene });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch("/:id", sceneUpload, async (req, res, next) => {
+  try {
+    const bgFile = req.files?.background?.[0] || null;
+    const logoFile = req.files?.logo?.[0] || null;
+
+    const scene = await updateScene(req.params.id, {
+      name: req.body.name,
+      logoPosition: req.body.logoPosition,
+      backgroundFile: bgFile,
+      logoFile: logoFile,
+    });
+
     if (!scene) return res.status(404).json({ success: false, error: "Scene not found" });
     res.json({ success: true, data: scene });
   } catch (err) {
