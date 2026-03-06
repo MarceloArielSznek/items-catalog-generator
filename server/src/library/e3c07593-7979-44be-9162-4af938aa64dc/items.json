@@ -1,0 +1,32 @@
+[
+  {
+    "id": "56115cac-b47a-4656-956f-f2d96a613046",
+    "albumId": "e3c07593-7979-44be-9162-4af938aa64dc",
+    "title": "",
+    "description": "",
+    "imageUrl": "/generated/catalog-93e83e9c-b135-4c76-a33f-5e8c2ea79f31.png",
+    "filename": "catalog-93e83e9c-b135-4c76-a33f-5e8c2ea79f31.png",
+    "sceneId": "ab383f03-48ca-4987-8723-c4feeec647b5",
+    "itemScale": 0.6,
+    "shadowIntensity": 0.45,
+    "mode": "quick",
+    "format": "square",
+    "createdAt": "2026-03-06T20:52:25.040Z",
+    "updatedAt": "2026-03-06T20:52:25.040Z"
+  },
+  {
+    "id": "34c4a269-78ff-4256-8eb4-ee44f9aa15b1",
+    "albumId": "e3c07593-7979-44be-9162-4af938aa64dc",
+    "title": "Plywood Removal Service",
+    "description": "",
+    "imageUrl": "/generated/catalog-8bf44321-7bbe-44f9-83a7-b0a8ce2bb376.png",
+    "filename": "catalog-8bf44321-7bbe-44f9-83a7-b0a8ce2bb376.png",
+    "sceneId": "ab383f03-48ca-4987-8723-c4feeec647b5",
+    "itemScale": 0.55,
+    "shadowIntensity": 0.6,
+    "mode": "quick",
+    "format": "square",
+    "createdAt": "2026-03-06T21:06:16.834Z",
+    "updatedAt": "2026-03-06T21:06:16.834Z"
+  }
+]
