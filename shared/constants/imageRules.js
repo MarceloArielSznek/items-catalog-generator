@@ -44,15 +44,20 @@ export const OUTPUT_FORMATS = {
 
 export const DEFAULT_FORMAT = "square";
 
+export const LIGHTING_DEFAULTS = {
+  brightness: 1,
+  contrast: 1,
+  saturation: 1,
+  warmth: 0,
+};
+
 export const COMPOSITION_DEFAULTS = {
   logoScale: 0.30,
   logoMargin: 40,
   itemScale: 0.30,
   itemVerticalBias: 0.55,
-  contactShadowHeight: 0.06,
   contactShadowOpacity: 0.5,
   ambientShadowBlur: 30,
   ambientShadowOpacity: 0.25,
-  ambientShadowSpread: 1.15,
   ambientShadowOffsetY: 8,
 };

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { listScenes, createScene, deleteScene, updateScene } from "../services/api.js";
 import LogoPositionGrid from "../components/LogoPositionGrid.jsx";
 import { validateImageFile, createPreviewUrl, revokePreviewUrl } from "../utils/fileHelpers.js";
+import { COMPOSITION_DEFAULTS } from "../../../shared/constants/imageRules.js";
 
 export default function SceneManagerPage() {
   const navigate = useNavigate();
@@ -18,6 +19,7 @@ export default function SceneManagerPage() {
   const [bgPreview, setBgPreview] = useState(null);
   const [logoPreview, setLogoPreview] = useState(null);
   const [logoPosition, setLogoPosition] = useState("bottom-right");
+  const [logoScale, setLogoScale] = useState(COMPOSITION_DEFAULTS.logoScale);
 
   const bgRef = useRef(null);
   const logoRef = useRef(null);
@@ -55,7 +57,7 @@ export default function SceneManagerPage() {
     setCreating(true);
     setError(null);
     try {
-      await createScene({ name: name || "Untitled Scene", background: bgFile, logo: logoFile, logoPosition });
+      await createScene({ name: name || "Untitled Scene", background: bgFile, logo: logoFile, logoPosition, logoScale });
       resetForm();
       await load();
     } catch (err) {
@@ -75,11 +77,13 @@ export default function SceneManagerPage() {
     setBgPreview(null);
     setLogoPreview(null);
     setLogoPosition("bottom-right");
+    setLogoScale(COMPOSITION_DEFAULTS.logoScale);
   }
 
   const [editingScene, setEditingScene] = useState(null);
   const [editName, setEditName] = useState("");
   const [editLogoPosition, setEditLogoPosition] = useState("bottom-right");
+  const [editLogoScale, setEditLogoScale] = useState(COMPOSITION_DEFAULTS.logoScale);
   const [editBgFile, setEditBgFile] = useState(null);
   const [editLogoFile, setEditLogoFile] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -90,6 +94,7 @@ export default function SceneManagerPage() {
     setEditingScene(scene.id);
     setEditName(scene.name);
     setEditLogoPosition(scene.logoPosition || "bottom-right");
+    setEditLogoScale(scene.logoScale || COMPOSITION_DEFAULTS.logoScale);
     setEditBgFile(null);
     setEditLogoFile(null);
   }
@@ -108,6 +113,7 @@ export default function SceneManagerPage() {
       await updateScene(editingScene, {
         name: editName,
         logoPosition: editLogoPosition,
+        logoScale: editLogoScale,
         background: editBgFile,
         logo: editLogoFile,
       });
@@ -200,6 +206,21 @@ export default function SceneManagerPage() {
             <LogoPositionGrid value={logoPosition} onChange={setLogoPosition} />
           </div>
 
+          <div className="scene-form__row">
+            <div className="input-group">
+              <label className="input-group__label">Logo Size: <strong>{Math.round(logoScale * 100)}%</strong></label>
+              <input
+                className="composite-preview__slider"
+                type="range"
+                min={0.05}
+                max={0.50}
+                step={0.01}
+                value={logoScale}
+                onChange={(e) => setLogoScale(parseFloat(e.target.value))}
+              />
+            </div>
+          </div>
+
           <div className="scene-form__actions">
             <button type="submit" className="btn btn--primary" disabled={creating || !bgFile || !logoFile}>
               {creating ? "Creating..." : "Create Scene"}
@@ -236,6 +257,18 @@ export default function SceneManagerPage() {
                   </div>
                   <div style={{ margin: "12px 0" }}>
                     <LogoPositionGrid value={editLogoPosition} onChange={setEditLogoPosition} />
+                  </div>
+                  <div className="input-group" style={{ marginBottom: 12 }}>
+                    <label className="input-group__label">Logo Size: <strong>{Math.round(editLogoScale * 100)}%</strong></label>
+                    <input
+                      className="composite-preview__slider"
+                      type="range"
+                      min={0.05}
+                      max={0.50}
+                      step={0.01}
+                      value={editLogoScale}
+                      onChange={(e) => setEditLogoScale(parseFloat(e.target.value))}
+                    />
                   </div>
                   <div className="scene-card__actions">
                     <button type="submit" className="btn btn--primary btn--sm" disabled={saving}>{saving ? "Saving…" : "Save"}</button>

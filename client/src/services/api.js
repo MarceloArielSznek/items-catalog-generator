@@ -11,12 +11,13 @@ async function request(url, options = {}) {
   return result;
 }
 
-export async function createScene({ name, background, logo, logoPosition }) {
+export async function createScene({ name, background, logo, logoPosition, logoScale }) {
   const formData = new FormData();
   formData.append("name", name);
   formData.append("background", background);
   formData.append("logo", logo);
   if (logoPosition) formData.append("logoPosition", logoPosition);
+  if (logoScale != null) formData.append("logoScale", String(logoScale));
 
   return request(`${config.API_BASE_URL}/scenes`, { method: "POST", body: formData });
 }
@@ -61,6 +62,18 @@ export async function generateWithScene({ sceneId, item, itemName, instruction, 
   return request(`${config.API_BASE_URL}/generate-with-scene/${sceneId}`, { method: "POST", body: formData });
 }
 
+export async function processServiceImage({ photo, logo, format, lighting, logoPosition, logoScale }) {
+  const formData = new FormData();
+  formData.append("photo", photo);
+  formData.append("logo", logo);
+  if (format) formData.append("format", format);
+  if (lighting) formData.append("lighting", JSON.stringify(lighting));
+  if (logoPosition) formData.append("logoPosition", logoPosition);
+  if (logoScale != null) formData.append("logoScale", String(logoScale));
+
+  return request(`${config.API_BASE_URL}/process-service-image`, { method: "POST", body: formData });
+}
+
 export async function removeBackground(itemFile) {
   const formData = new FormData();
   formData.append("item", itemFile);
@@ -69,10 +82,12 @@ export async function removeBackground(itemFile) {
 
 // ── Scene Update ──
 
-export async function updateScene(id, { name, background, logo, logoPosition }) {
+export async function updateScene(id, { name, background, logo, logoPosition, logoScale, lighting }) {
   const formData = new FormData();
   if (name != null) formData.append("name", name);
   if (logoPosition != null) formData.append("logoPosition", logoPosition);
+  if (logoScale != null) formData.append("logoScale", String(logoScale));
+  if (lighting !== undefined) formData.append("lighting", JSON.stringify(lighting));
   if (background) formData.append("background", background);
   if (logo) formData.append("logo", logo);
   return request(`${config.API_BASE_URL}/scenes/${id}`, { method: "PATCH", body: formData });

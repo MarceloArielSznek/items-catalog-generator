@@ -6,7 +6,7 @@ import env from "../config/env.js";
 import { UPLOAD_FIELDS } from "../../../shared/constants/imageRules.js";
 import { isAllowedMimeType } from "../utils/fileValidation.js";
 import { validateGenerateRequest } from "../middleware/validateGenerateRequest.js";
-import { handleGenerateCatalogImage, handleGenerateWithScene, handleRemoveBackground } from "../controllers/imageController.js";
+import { handleGenerateCatalogImage, handleGenerateWithScene, handleRemoveBackground, handleProcessServiceImage } from "../controllers/imageController.js";
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, env.UPLOAD_DIR),
@@ -36,6 +36,11 @@ const uploadItem = multer({ storage, fileFilter, limits }).fields([
   { name: UPLOAD_FIELDS.ITEM, maxCount: 1 },
 ]);
 
+const uploadServicePhoto = multer({ storage, fileFilter, limits }).fields([
+  { name: "photo", maxCount: 1 },
+  { name: "logo", maxCount: 1 },
+]);
+
 const router = Router();
 
 router.post(
@@ -55,6 +60,12 @@ router.post(
   "/remove-background",
   uploadItem,
   handleRemoveBackground,
+);
+
+router.post(
+  "/process-service-image",
+  uploadServicePhoto,
+  handleProcessServiceImage,
 );
 
 export default router;

@@ -11,6 +11,9 @@ export default function Header() {
         <NavLink to="/" end className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
           Scenes
         </NavLink>
+        <NavLink to="/service-photos" className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
+          Service Photos
+        </NavLink>
         <NavLink to="/library" className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
           Library
         </NavLink>

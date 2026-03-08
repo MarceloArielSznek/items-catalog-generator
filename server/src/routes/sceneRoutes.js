@@ -38,11 +38,15 @@ router.post("/", sceneUpload, async (req, res, next) => {
       return res.status(400).json({ success: false, error: "Background and logo files are required" });
     }
 
+    let logoScale = parseFloat(req.body.logoScale);
+    if (isNaN(logoScale) || logoScale < 0.05 || logoScale > 0.60) logoScale = null;
+
     const scene = await createScene({
       name: req.body.name,
       backgroundFile: bgFile,
       logoFile: logoFile,
       logoPosition: req.body.logoPosition,
+      logoScale,
     });
 
     res.status(201).json({ success: true, data: scene });
@@ -75,9 +79,22 @@ router.patch("/:id", sceneUpload, async (req, res, next) => {
     const bgFile = req.files?.background?.[0] || null;
     const logoFile = req.files?.logo?.[0] || null;
 
+    let logoScale = undefined;
+    if (req.body.logoScale != null) {
+      logoScale = parseFloat(req.body.logoScale);
+      if (isNaN(logoScale) || logoScale < 0.05 || logoScale > 0.60) logoScale = undefined;
+    }
+
+    let lighting = undefined;
+    if (req.body.lighting) {
+      try { lighting = JSON.parse(req.body.lighting); } catch { /* ignore */ }
+    }
+
     const scene = await updateScene(req.params.id, {
       name: req.body.name,
       logoPosition: req.body.logoPosition,
+      logoScale,
+      lighting,
       backgroundFile: bgFile,
       logoFile: logoFile,
     });

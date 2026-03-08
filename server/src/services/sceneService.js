@@ -16,7 +16,7 @@ function preserveExtension(originalname) {
   return path.extname(originalname).toLowerCase() || ".png";
 }
 
-export async function createScene({ name, backgroundFile, logoFile, logoPosition }) {
+export async function createScene({ name, backgroundFile, logoFile, logoPosition, logoScale, lighting }) {
   const id = uuidv4();
   const dir = scenePath(id);
   await fsp.mkdir(dir, { recursive: true });
@@ -33,6 +33,8 @@ export async function createScene({ name, backgroundFile, logoFile, logoPosition
     id,
     name: name || "Untitled Scene",
     logoPosition: logoPosition || "bottom-right",
+    logoScale: logoScale != null ? logoScale : null,
+    lighting: lighting || null,
     backgroundFile: bgFilename,
     logoFile: logoFilename,
     createdAt: new Date().toISOString(),
@@ -83,7 +85,7 @@ export async function getScene(id) {
   }
 }
 
-export async function updateScene(id, { name, logoPosition, backgroundFile, logoFile }) {
+export async function updateScene(id, { name, logoPosition, logoScale, lighting, backgroundFile, logoFile }) {
   try {
     const raw = await fsp.readFile(metaPath(id), "utf-8");
     const meta = JSON.parse(raw);
@@ -91,6 +93,8 @@ export async function updateScene(id, { name, logoPosition, backgroundFile, logo
 
     if (name != null) meta.name = name;
     if (logoPosition != null) meta.logoPosition = logoPosition;
+    if (logoScale !== undefined) meta.logoScale = logoScale;
+    if (lighting !== undefined) meta.lighting = lighting;
 
     if (backgroundFile) {
       const bgExt = preserveExtension(backgroundFile.originalname);

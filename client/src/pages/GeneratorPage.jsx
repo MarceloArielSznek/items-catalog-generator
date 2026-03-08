@@ -217,7 +217,7 @@ export default function GeneratorPage() {
         </div>
       )}
 
-      {tab === "single" ? (
+      {tab === "single" && (
         <>
           {!itemFile && (
             <div className="upload-grid upload-grid--single">
@@ -287,7 +287,9 @@ export default function GeneratorPage() {
             />
           )}
         </>
-      ) : (
+      )}
+
+      {tab === "bulk" && (
         <>
           <BulkCarousel
             items={bulkItems}
@@ -339,6 +341,7 @@ export default function GeneratorPage() {
           )}
         </>
       )}
+
     </main>
   );
 }

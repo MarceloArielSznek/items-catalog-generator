@@ -1,7 +1,7 @@
 import logger from "../utils/logger.js";
 import { getUploadedFilePath, buildPublicUrl, cleanupFiles } from "../services/storageService.js";
 import { removeItemBackground } from "../services/backgroundRemovalService.js";
-import { composeFullImage, overlayLogo, composePreview, resizeToFormat } from "../services/compositionService.js";
+import { composeFullImage, overlayLogo, composePreview, resizeToFormat, processServiceImage } from "../services/compositionService.js";
 import { generateSceneImage, refineComposedImage } from "../services/openaiImageService.js";
 import { getScene } from "../services/sceneService.js";
 import {
@@ -87,7 +87,7 @@ function parseOptions(body) {
   return { logoPosition, mode, format, itemName: body.itemName, instruction: body.instruction, itemScale, shadowIntensity };
 }
 
-async function runGeneration({ backgroundPath, itemPath, logoPath, logoPosition, mode, format, itemName, instruction, itemScale, shadowIntensity }) {
+async function runGeneration({ backgroundPath, itemPath, logoPath, logoPosition, logoScale, mode, format, itemName, instruction, itemScale, shadowIntensity }) {
   const start = Date.now();
 
   const pipeline = PIPELINES[mode];
@@ -106,7 +106,7 @@ async function runGeneration({ backgroundPath, itemPath, logoPath, logoPosition,
   const resized = await resizeToFormat(composedPath, format);
   if (resized.outputPath !== composedPath) tempFiles.push(composedPath);
 
-  const final = await overlayLogo({ scenePath: resized.outputPath, logoPath, logoPosition });
+  const final = await overlayLogo({ scenePath: resized.outputPath, logoPath, logoPosition, logoScale });
   if (final.outputPath !== resized.outputPath) tempFiles.push(resized.outputPath);
 
   const elapsed = Date.now() - start;
@@ -223,11 +223,73 @@ export async function handleGenerateWithScene(req, res, next) {
       itemPath,
       logoPath: scene.logoPath,
       logoPosition,
+      logoScale: scene.logoScale || null,
       mode, format, itemName, instruction, itemScale, shadowIntensity,
     });
     tempFiles = result.tempFiles;
 
     res.status(200).json({ success: true, data: result.data });
+  } catch (err) {
+    next(err);
+  } finally {
+    cleanupFiles([...uploadedPaths, ...tempFiles]);
+  }
+}
+
+export async function handleProcessServiceImage(req, res, next) {
+  const uploadedPaths = [];
+  let tempFiles = [];
+
+  try {
+    const photoFile = req.files?.photo?.[0];
+    if (!photoFile) {
+      return res.status(400).json({ success: false, error: "Photo file is required" });
+    }
+
+    const logoFile = req.files?.logo?.[0];
+    if (!logoFile) {
+      return res.status(400).json({ success: false, error: "Logo file is required" });
+    }
+
+    const photoPath = getUploadedFilePath(photoFile);
+    const logoPath = getUploadedFilePath(logoFile);
+    uploadedPaths.push(photoPath, logoPath);
+
+    let format = req.body.format || DEFAULT_FORMAT;
+    if (!OUTPUT_FORMATS[format]) format = DEFAULT_FORMAT;
+
+    let lighting = null;
+    if (req.body.lighting) {
+      try { lighting = JSON.parse(req.body.lighting); } catch { /* ignore */ }
+    }
+
+    const logoPosition = req.body.logoPosition && LOGO_POSITIONS.includes(req.body.logoPosition)
+      ? req.body.logoPosition
+      : "bottom-right";
+
+    let logoScale = parseFloat(req.body.logoScale);
+    if (isNaN(logoScale) || logoScale < 0.05 || logoScale > 0.60) {
+      logoScale = null;
+    }
+
+    logger.info("Process service image", { format, lighting, logoPosition });
+
+    const result = await processServiceImage({
+      imagePath: photoPath,
+      format,
+      lighting,
+      logoPath,
+      logoPosition,
+      logoScale,
+    });
+    tempFiles = result.tempFiles || [];
+
+    const imageUrl = buildPublicUrl(result.outputFilename);
+
+    res.status(200).json({
+      success: true,
+      data: { imageUrl, filename: result.outputFilename, format },
+    });
   } catch (err) {
     next(err);
   } finally {
