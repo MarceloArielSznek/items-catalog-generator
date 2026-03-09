@@ -5,6 +5,7 @@ import imageRoutes from "./routes/imageRoutes.js";
 import sceneRoutes from "./routes/sceneRoutes.js";
 import downloadRoutes from "./routes/downloadRoutes.js";
 import libraryRoutes from "./routes/libraryRoutes.js";
+import payloadRoutes from "./routes/payloadRoutes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
 const app = express();
@@ -19,6 +20,7 @@ app.use("/api", imageRoutes);
 app.use("/api/scenes", sceneRoutes);
 app.use("/api", downloadRoutes);
 app.use("/api/library", libraryRoutes);
+app.use("/api/payload", payloadRoutes);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
