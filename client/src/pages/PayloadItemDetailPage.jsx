@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import { fetchItem, updatePayloadItem, uploadItemMedia, detachItemMedia } from "../services/payloadApi.js";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { fetchItem, updatePayloadItem, uploadItemMedia, detachItemMedia, invalidatePayloadCache } from "../services/payloadApi.js";
 import { listScenes, generateWithScene, removeBackground, processServiceImage } from "../services/api.js";
 import RichTextEditor from "../components/RichTextEditor.jsx";
 import ItemPreviewComposite from "../components/ItemPreviewComposite.jsx";
@@ -59,6 +59,7 @@ function buildCssFilter(lighting) {
 export default function PayloadItemDetailPage() {
   const { itemId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const fileInputRef = useRef(null);
 
   const [item, setItem] = useState(null);
@@ -159,6 +160,8 @@ export default function PayloadItemDetailPage() {
     try {
       await updatePayloadItem(itemId, { name, description });
       setDirty(false);
+      const categoryId = item?.category?.id ?? item?.category;
+      if (categoryId != null) invalidatePayloadCache(categoryId);
       showSaved("Saved successfully");
     } catch (err) { setError(err.message); }
     finally { setSaving(false); }
@@ -172,6 +175,8 @@ export default function PayloadItemDetailPage() {
     setError(null);
     try {
       await uploadItemMedia(itemId, file);
+      const categoryId = item?.category?.id ?? item?.category;
+      if (categoryId != null) invalidatePayloadCache(categoryId);
       await loadItem();
     } catch (err) { setError(err.message); }
     finally {
@@ -187,6 +192,8 @@ export default function PayloadItemDetailPage() {
     setError(null);
     try {
       await detachItemMedia(itemId, mediaId);
+      const categoryId = item?.category?.id ?? item?.category;
+      if (categoryId != null) invalidatePayloadCache(categoryId);
       await loadItem();
     } catch (err) { setError(err.message); }
     finally { setDetaching(null); }
@@ -196,6 +203,8 @@ export default function PayloadItemDetailPage() {
   const uploadGeneratedToPayload = async (imageUrl, filename) => {
     const file = await fetchGeneratedFile(imageUrl, filename);
     await uploadItemMedia(itemId, file);
+    const categoryId = item?.category?.id ?? item?.category;
+    if (categoryId != null) invalidatePayloadCache(categoryId);
     await loadItem();
     showSaved("Image uploaded to Payload");
   };
@@ -347,7 +356,7 @@ export default function PayloadItemDetailPage() {
   if (error && !item) {
     return (
       <main className="page">
-        <button className="btn btn--link" onClick={() => navigate(-1)}>Back</button>
+        <button className="btn btn--link" onClick={() => navigate("/items", { state: { categoryId: location.state?.fromCategoryId } })}>Back</button>
         <div className="error-banner">
           <span className="error-banner__icon">!</span>
           <span className="error-banner__message">{error}</span>
@@ -362,7 +371,7 @@ export default function PayloadItemDetailPage() {
 
   return (
     <main className="page">
-      <button className="btn btn--link" onClick={() => navigate("/items")}>Back to Items</button>
+      <button className="btn btn--link" onClick={() => navigate("/items", { state: { categoryId: location.state?.fromCategoryId } })}>Back to Items</button>
 
       {error && (
         <div className="error-banner" style={{ marginBottom: 16 }}>

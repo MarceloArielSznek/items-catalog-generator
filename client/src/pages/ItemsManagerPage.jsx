@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { fetchCategories, fetchItemsByCategory } from "../services/payloadApi.js";
 
 function getItemThumbnail(item, baseUrl) {
@@ -17,6 +17,7 @@ const PAYLOAD_BASE = "https://www.attic-tech.com";
 
 export default function ItemsManagerPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [categories, setCategories] = useState([]);
   const [selectedCat, setSelectedCat] = useState(null);
   const [items, setItems] = useState([]);
@@ -24,6 +25,8 @@ export default function ItemsManagerPage() {
   const [loadingItems, setLoadingItems] = useState(false);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
+
+  const incomingCategoryId = location.state?.categoryId ?? location.state?.fromCategoryId;
 
   const loadCategories = useCallback(async () => {
     try {
@@ -46,6 +49,12 @@ export default function ItemsManagerPage() {
   useEffect(() => {
     loadCategories();
   }, [loadCategories]);
+
+  useEffect(() => {
+    if (categories.length === 0 || incomingCategoryId == null) return;
+    const cat = categories.find((c) => String(c.id) === String(incomingCategoryId));
+    if (cat) setSelectedCat(cat);
+  }, [categories, incomingCategoryId]);
 
   const loadItems = useCallback(async (catId) => {
     if (!catId) return;
@@ -164,7 +173,7 @@ export default function ItemsManagerPage() {
                   <div
                     key={item.id}
                     className="library-card"
-                    onClick={() => navigate(`/items/${item.id}`)}
+                    onClick={() => navigate(`/items/${item.id}`, { state: { fromCategoryId: selectedCat?.id } })}
                   >
                     <div className="library-card__img-wrap">
                       {thumb ? (
@@ -172,6 +181,7 @@ export default function ItemsManagerPage() {
                           className="library-card__img"
                           src={thumb}
                           alt={item.name || "Item"}
+                          loading="lazy"
                         />
                       ) : (
                         <div className="library-card__placeholder">

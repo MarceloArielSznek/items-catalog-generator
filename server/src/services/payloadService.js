@@ -14,9 +14,42 @@ const ITEM_CATEGORY_FIELD = "category";
 const PAGE_LIMIT = 100;
 const QUERY_DEPTH = 1;
 const TOKEN_TTL_MS = 25 * 60 * 1000;
+const CACHE_TTL_MS = 2 * 60 * 1000; // 5 min for categories/items
 
 let cachedToken = null;
 let tokenIssuedAt = 0;
+
+const categoriesCache = { data: null, expires: 0 };
+const itemsByCategoryCache = new Map(); // categoryId -> { data, expires }
+
+function getCachedCategories() {
+  if (categoriesCache.data !== null && Date.now() < categoriesCache.expires) {
+    return categoriesCache.data;
+  }
+  return null;
+}
+
+function setCachedCategories(data) {
+  categoriesCache.data = data;
+  categoriesCache.expires = Date.now() + CACHE_TTL_MS;
+}
+
+function getCachedItems(categoryId) {
+  const entry = itemsByCategoryCache.get(String(categoryId));
+  if (entry && Date.now() < entry.expires) return entry.data;
+  return null;
+}
+
+function setCachedItems(categoryId, data) {
+  itemsByCategoryCache.set(String(categoryId), {
+    data,
+    expires: Date.now() + CACHE_TTL_MS,
+  });
+}
+
+export function invalidateItemsCacheForCategory(categoryId) {
+  if (categoryId != null) itemsByCategoryCache.delete(String(categoryId));
+}
 
 function buildUrl(...segments) {
   const parts = [env.PAYLOAD_API_URL, API_PREFIX, ...segments]
@@ -111,12 +144,23 @@ async function fetchAllPages(collection, params = {}) {
 }
 
 export async function getCategories() {
+  const cached = getCachedCategories();
+  if (cached) {
+    logger.info(`Categories from cache (${cached.length} items)`);
+    return cached;
+  }
   const categories = await fetchAllPages(CATEGORIES_COLLECTION);
   logger.info(`Fetched ${categories.length} categories from Payload`);
+  setCachedCategories(categories);
   return categories;
 }
 
 export async function getItemsByCategory(categoryId) {
+  const cached = getCachedItems(categoryId);
+  if (cached) {
+    logger.info(`Items for category ${categoryId} from cache (${cached.length} items)`);
+    return cached;
+  }
   const token = await getToken();
   const url = `${buildUrl(CATEGORIES_COLLECTION, categoryId)}?depth=2`;
   const category = await payloadFetch(url, { headers: authHeaders(token) });
@@ -127,6 +171,7 @@ export async function getItemsByCategory(categoryId) {
     .filter(Boolean);
 
   logger.info(`Fetched ${items.length} items for category ${categoryId}`);
+  setCachedItems(categoryId, items);
   return items;
 }
 
@@ -151,6 +196,8 @@ export async function updateItem(itemId, { name, description }) {
     headers: authHeaders(token),
     body: JSON.stringify(payload),
   });
+  const categoryId = result?.[ITEM_CATEGORY_FIELD]?.id ?? result?.[ITEM_CATEGORY_FIELD];
+  if (categoryId != null) invalidateItemsCacheForCategory(categoryId);
   logger.info(`Updated item ${itemId} in Payload`);
   return result;
 }
@@ -209,6 +256,8 @@ export async function attachMediaToItem(itemId, mediaId) {
     headers: authHeaders(token),
     body: JSON.stringify(payload),
   });
+  const categoryId = item?.[ITEM_CATEGORY_FIELD]?.id ?? item?.[ITEM_CATEGORY_FIELD];
+  if (categoryId != null) invalidateItemsCacheForCategory(categoryId);
   logger.info(`Attached media ${mediaId} to item ${itemId}`);
   return result;
 }
@@ -232,6 +281,8 @@ export async function detachMediaFromItem(itemId, mediaId) {
     headers: authHeaders(token),
     body: JSON.stringify(payload),
   });
+  const categoryId = item?.[ITEM_CATEGORY_FIELD]?.id ?? item?.[ITEM_CATEGORY_FIELD];
+  if (categoryId != null) invalidateItemsCacheForCategory(categoryId);
   logger.info(`Detached media ${mediaId} from item ${itemId}`);
   return result;
 }
