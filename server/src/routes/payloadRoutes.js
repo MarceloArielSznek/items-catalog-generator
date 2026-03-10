@@ -1,6 +1,8 @@
 import { Router } from "express";
 import multer from "multer";
 import {
+  getWorkAreas,
+  getCategoriesByWorkArea,
   getCategories,
   getItemsByCategory,
   getItem,
@@ -12,6 +14,24 @@ import {
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+router.get("/work-areas", async (_req, res, next) => {
+  try {
+    const workAreas = await getWorkAreas();
+    res.json({ success: true, data: workAreas });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/work-areas/:id/categories", async (req, res, next) => {
+  try {
+    const categories = await getCategoriesByWorkArea(req.params.id);
+    res.json({ success: true, data: categories });
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.get("/categories", async (_req, res, next) => {
   try {

@@ -4,6 +4,7 @@ import logger from "../utils/logger.js";
 const API_PREFIX = "/api";
 const AUTH_COLLECTION = "users";
 const LOGIN_FIELD = "email";
+const WORK_AREAS_COLLECTION = "work-areas";
 const CATEGORIES_COLLECTION = "item-categories";
 const ITEMS_COLLECTION = "items";
 const MEDIA_COLLECTION = "media";
@@ -19,6 +20,8 @@ const CACHE_TTL_MS = 2 * 60 * 1000; // 5 min for categories/items
 let cachedToken = null;
 let tokenIssuedAt = 0;
 
+const workAreasCache = { data: null, expires: 0 };
+const categoriesByWorkAreaCache = new Map(); // workAreaId -> { data, expires }
 const categoriesCache = { data: null, expires: 0 };
 const itemsByCategoryCache = new Map(); // categoryId -> { data, expires }
 
@@ -141,6 +144,43 @@ async function fetchAllPages(collection, params = {}) {
   }
 
   return docs;
+}
+
+export async function getWorkAreas() {
+  if (workAreasCache.data !== null && Date.now() < workAreasCache.expires) {
+    logger.info(`Work areas from cache (${workAreasCache.data.length} items)`);
+    return workAreasCache.data;
+  }
+  const docs = await fetchAllPages(WORK_AREAS_COLLECTION, { depth: "0" });
+  const workAreas = docs.map(({ id, name }) => ({ id, name }));
+  logger.info(`Fetched ${workAreas.length} work areas from Payload`);
+  workAreasCache.data = workAreas;
+  workAreasCache.expires = Date.now() + CACHE_TTL_MS;
+  return workAreas;
+}
+
+export async function getCategoriesByWorkArea(workAreaId) {
+  if (!workAreaId) throw new Error("Work area ID is required.");
+  const entry = categoriesByWorkAreaCache.get(String(workAreaId));
+  if (entry && Date.now() < entry.expires) {
+    logger.info(`Categories for work area ${workAreaId} from cache (${entry.data.length} items)`);
+    return entry.data;
+  }
+  const token = await getToken();
+  const url = `${buildUrl(WORK_AREAS_COLLECTION, workAreaId)}?depth=1`;
+  const workArea = await payloadFetch(url, { headers: authHeaders(token) });
+
+  const raw = Array.isArray(workArea?.item_categories) ? workArea.item_categories : [];
+  const categories = raw
+    .map((entry) => (typeof entry === "object" && entry !== null ? { id: entry.id, name: entry.name } : null))
+    .filter(Boolean);
+
+  logger.info(`Fetched ${categories.length} categories for work area ${workAreaId}`);
+  categoriesByWorkAreaCache.set(String(workAreaId), {
+    data: categories,
+    expires: Date.now() + CACHE_TTL_MS,
+  });
+  return categories;
 }
 
 export async function getCategories() {

@@ -3,6 +3,8 @@ import config from "../config.js";
 const BASE = `${config.API_BASE_URL}/payload`;
 const CACHE_TTL_MS = 2 * 60 * 1000; // 5 min
 
+const workAreasCache = { data: null, expires: 0 };
+const categoriesByWACache = new Map(); // workAreaId -> { data, expires }
 const categoriesCache = { data: null, expires: 0 };
 const itemsCache = new Map(); // categoryId -> { data, expires }
 
@@ -16,10 +18,41 @@ async function request(url, options = {}) {
 }
 
 export function invalidatePayloadCache(categoryId) {
+  workAreasCache.data = null;
+  workAreasCache.expires = 0;
+  categoriesByWACache.clear();
   categoriesCache.data = null;
   categoriesCache.expires = 0;
   if (categoryId != null) itemsCache.delete(String(categoryId));
   else itemsCache.clear();
+}
+
+export async function fetchWorkAreas() {
+  const now = Date.now();
+  if (workAreasCache.data && now < workAreasCache.expires) {
+    return workAreasCache.data;
+  }
+  const body = await request(`${BASE}/work-areas`);
+  const data = body.data ?? body;
+  workAreasCache.data = { ...body, data };
+  workAreasCache.expires = now + CACHE_TTL_MS;
+  return workAreasCache.data;
+}
+
+export async function fetchCategoriesByWorkArea(workAreaId) {
+  const now = Date.now();
+  const entry = categoriesByWACache.get(String(workAreaId));
+  if (entry && now < entry.expires) {
+    return entry.data;
+  }
+  const body = await request(`${BASE}/work-areas/${workAreaId}/categories`);
+  const data = body.data ?? body;
+  const result = { ...body, data };
+  categoriesByWACache.set(String(workAreaId), {
+    data: result,
+    expires: now + CACHE_TTL_MS,
+  });
+  return result;
 }
 
 export async function fetchCategories() {

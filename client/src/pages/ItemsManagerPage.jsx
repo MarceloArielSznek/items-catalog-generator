@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { fetchCategories, fetchItemsByCategory } from "../services/payloadApi.js";
+import {
+  fetchWorkAreas,
+  fetchCategoriesByWorkArea,
+  fetchItemsByCategory,
+} from "../services/payloadApi.js";
 
 function getItemThumbnail(item, baseUrl) {
   const media = item?.media;
@@ -14,47 +18,89 @@ function getItemThumbnail(item, baseUrl) {
 }
 
 const PAYLOAD_BASE = "https://www.attic-tech.com";
+const ITEMS_PER_PAGE = 8;
 
 export default function ItemsManagerPage() {
   const navigate = useNavigate();
   const location = useLocation();
+
+  const [workAreas, setWorkAreas] = useState([]);
+  const [selectedWA, setSelectedWA] = useState(null);
+  const [loadingWAs, setLoadingWAs] = useState(true);
+
   const [categories, setCategories] = useState([]);
   const [selectedCat, setSelectedCat] = useState(null);
+  const [loadingCats, setLoadingCats] = useState(false);
+
   const [items, setItems] = useState([]);
-  const [loadingCats, setLoadingCats] = useState(true);
   const [loadingItems, setLoadingItems] = useState(false);
+
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
 
   const incomingCategoryId = location.state?.categoryId ?? location.state?.fromCategoryId;
 
-  const loadCategories = useCallback(async () => {
+  const loadWorkAreas = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetchCategories();
+      const res = await fetchWorkAreas();
       const sorted = (res.data || []).sort((a, b) =>
-        (a.title || a.name || "").localeCompare(b.title || b.name || ""),
+        (a.name || "").localeCompare(b.name || ""),
       );
-      setCategories(sorted);
-      if (sorted.length > 0 && !selectedCat) {
-        setSelectedCat(sorted[0]);
+      setWorkAreas(sorted);
+      if (sorted.length > 0 && !selectedWA) {
+        setSelectedWA(sorted[0]);
       }
     } catch (err) {
       setError(err.message);
     } finally {
-      setLoadingCats(false);
+      setLoadingWAs(false);
     }
   }, []);
 
   useEffect(() => {
-    loadCategories();
-  }, [loadCategories]);
+    loadWorkAreas();
+  }, [loadWorkAreas]);
+
+  const loadCategories = useCallback(async (waId) => {
+    if (!waId) return;
+    setLoadingCats(true);
+    setError(null);
+    try {
+      const res = await fetchCategoriesByWorkArea(waId);
+      const sorted = (res.data || []).sort((a, b) =>
+        (a.title || a.name || "").localeCompare(b.title || b.name || ""),
+      );
+      setCategories(sorted);
+      if (sorted.length > 0) {
+        const restore = incomingCategoryId
+          ? sorted.find((c) => String(c.id) === String(incomingCategoryId))
+          : null;
+        setSelectedCat(restore || sorted[0]);
+      } else {
+        setSelectedCat(null);
+        setItems([]);
+      }
+    } catch (err) {
+      setError(err.message);
+      setCategories([]);
+      setSelectedCat(null);
+      setItems([]);
+    } finally {
+      setLoadingCats(false);
+    }
+  }, [incomingCategoryId]);
 
   useEffect(() => {
-    if (categories.length === 0 || incomingCategoryId == null) return;
-    const cat = categories.find((c) => String(c.id) === String(incomingCategoryId));
-    if (cat) setSelectedCat(cat);
-  }, [categories, incomingCategoryId]);
+    if (selectedWA?.id) {
+      setSelectedCat(null);
+      setItems([]);
+      setSearch("");
+      setPage(1);
+      loadCategories(selectedWA.id);
+    }
+  }, [selectedWA, loadCategories]);
 
   const loadItems = useCallback(async (catId) => {
     if (!catId) return;
@@ -73,9 +119,14 @@ export default function ItemsManagerPage() {
 
   useEffect(() => {
     if (selectedCat?.id) {
+      setPage(1);
       loadItems(selectedCat.id);
     }
   }, [selectedCat, loadItems]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search]);
 
   const filteredItems = search.trim()
     ? items.filter((item) => {
@@ -86,16 +137,22 @@ export default function ItemsManagerPage() {
       })
     : items;
 
-  if (loadingCats) {
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / ITEMS_PER_PAGE));
+  const pagedItems = filteredItems.slice(
+    (page - 1) * ITEMS_PER_PAGE,
+    page * ITEMS_PER_PAGE,
+  );
+
+  if (loadingWAs) {
     return (
-      <main className="page">
-        <p>Loading categories...</p>
+      <main className="page page--items-manager page--items-fixed">
+        <p>Loading work areas...</p>
       </main>
     );
   }
 
   return (
-    <main className="page page--items-manager">
+    <main className="page page--items-manager page--items-fixed">
       <div className="page-header">
         <div>
           <h2 className="page__title">Items Manager</h2>
@@ -112,94 +169,138 @@ export default function ItemsManagerPage() {
         </div>
       )}
 
-      <div className="items-layout">
+      <div className="wa-selector">
+        {workAreas.map((wa) => (
+          <button
+            key={wa.id}
+            className={`wa-selector__btn ${selectedWA?.id === wa.id ? "wa-selector__btn--active" : ""}`}
+            onClick={() => setSelectedWA(wa)}
+          >
+            {wa.name || "Untitled"}
+          </button>
+        ))}
+      </div>
+
+      <div className="items-layout items-layout--fixed">
         <aside className="items-sidebar">
           <div className="items-sidebar__header">Categories</div>
-          {categories.map((cat) => (
-            <button
-              key={cat.id}
-              className={`items-sidebar__item ${selectedCat?.id === cat.id ? "items-sidebar__item--active" : ""}`}
-              onClick={() => setSelectedCat(cat)}
-            >
-              {cat.title || cat.name || "Untitled"}
-            </button>
-          ))}
-          {categories.length === 0 && (
-            <p className="items-sidebar__empty">No categories found</p>
+          {loadingCats ? (
+            <p className="items-sidebar__empty">Loading...</p>
+          ) : (
+            <>
+              {categories.map((cat) => (
+                <button
+                  key={cat.id}
+                  className={`items-sidebar__item ${selectedCat?.id === cat.id ? "items-sidebar__item--active" : ""}`}
+                  onClick={() => setSelectedCat(cat)}
+                >
+                  {cat.title || cat.name || "Untitled"}
+                </button>
+              ))}
+              {categories.length === 0 && (
+                <p className="items-sidebar__empty">No categories in this work area</p>
+              )}
+            </>
           )}
         </aside>
 
         <section className="items-content">
-          {selectedCat && (
-            <div className="items-content__header">
-              <h3 className="items-content__cat-name">
-                {selectedCat.title || selectedCat.name}
-              </h3>
-              <span className="items-content__count">
-                {filteredItems.length} item{filteredItems.length !== 1 ? "s" : ""}
-              </span>
-            </div>
-          )}
+          <div className="items-content__top">
+            {selectedCat && (
+              <div className="items-content__header">
+                <h3 className="items-content__cat-name">
+                  {selectedCat.title || selectedCat.name}
+                </h3>
+                <span className="items-content__count">
+                  {filteredItems.length} item{filteredItems.length !== 1 ? "s" : ""}
+                </span>
+              </div>
+            )}
 
-          <div className="search-bar">
-            <input
-              className="search-bar__input"
-              type="text"
-              placeholder="Filter items by name..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            {search && (
-              <button
-                className="search-bar__clear"
-                onClick={() => setSearch("")}
-              >
-                ✕
-              </button>
+            <div className="search-bar">
+              <input
+                className="search-bar__input"
+                type="text"
+                placeholder="Filter items by name..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              {search && (
+                <button
+                  className="search-bar__clear"
+                  onClick={() => setSearch("")}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="items-content__grid-area">
+            {loadingItems ? (
+              <p className="scenes-empty">Loading items...</p>
+            ) : pagedItems.length === 0 ? (
+              <p className="scenes-empty">
+                {search ? "No items match your filter" : "No items in this category"}
+              </p>
+            ) : (
+              <div className="library-grid">
+                {pagedItems.map((item) => {
+                  const thumb = getItemThumbnail(item, PAYLOAD_BASE);
+                  return (
+                    <div
+                      key={item.id}
+                      className="library-card"
+                      onClick={() => navigate(`/items/${item.id}`, { state: { fromCategoryId: selectedCat?.id } })}
+                    >
+                      <div className="library-card__img-wrap">
+                        {thumb ? (
+                          <img
+                            className="library-card__img"
+                            src={thumb}
+                            alt={item.name || "Item"}
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="library-card__placeholder">
+                            No image
+                          </div>
+                        )}
+                      </div>
+                      <div className="library-card__body">
+                        <div className="library-card__title">
+                          {item.name || "Untitled"}
+                        </div>
+                        <div className="library-card__meta">
+                          {item.unit || ""}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
 
-          {loadingItems ? (
-            <p className="scenes-empty">Loading items...</p>
-          ) : filteredItems.length === 0 ? (
-            <p className="scenes-empty">
-              {search ? "No items match your filter" : "No items in this category"}
-            </p>
-          ) : (
-            <div className="library-grid">
-              {filteredItems.map((item) => {
-                const thumb = getItemThumbnail(item, PAYLOAD_BASE);
-                return (
-                  <div
-                    key={item.id}
-                    className="library-card"
-                    onClick={() => navigate(`/items/${item.id}`, { state: { fromCategoryId: selectedCat?.id } })}
-                  >
-                    <div className="library-card__img-wrap">
-                      {thumb ? (
-                        <img
-                          className="library-card__img"
-                          src={thumb}
-                          alt={item.name || "Item"}
-                          loading="lazy"
-                        />
-                      ) : (
-                        <div className="library-card__placeholder">
-                          No image
-                        </div>
-                      )}
-                    </div>
-                    <div className="library-card__body">
-                      <div className="library-card__title">
-                        {item.name || "Untitled"}
-                      </div>
-                      <div className="library-card__meta">
-                        {item.unit || ""}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+          {totalPages > 1 && (
+            <div className="items-pagination">
+              <button
+                className="items-pagination__btn"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => p - 1)}
+              >
+                ← Prev
+              </button>
+              <span className="items-pagination__info">
+                Page {page} of {totalPages}
+              </span>
+              <button
+                className="items-pagination__btn"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next →
+              </button>
             </div>
           )}
         </section>

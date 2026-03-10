@@ -2563,6 +2563,53 @@ body {
   max-width: 1280px;
 }
 
+.page--items-fixed {
+  height: calc(100vh - 57px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+}
+
+.wa-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.wa-selector__btn {
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #4b5563;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.wa-selector__btn:hover {
+  background: #e0e7ff;
+  color: #2563eb;
+  border-color: #c7d2fe;
+}
+
+.wa-selector__btn--active {
+  background: #2563eb;
+  color: #fff;
+  border-color: #2563eb;
+}
+
+.wa-selector__btn--active:hover {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
 .items-layout {
   display: grid;
   grid-template-columns: 240px 1fr;
@@ -2570,13 +2617,23 @@ body {
   align-items: start;
 }
 
+.items-layout--fixed {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+}
+
 .items-sidebar {
   background: #fff;
   border: 1px solid #e2e5ea;
   border-radius: 14px;
-  overflow: hidden;
-  position: sticky;
-  top: 80px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  align-self: start;
+}
+
+.items-layout--fixed .items-sidebar {
+  position: static;
 }
 
 .items-sidebar__header {
@@ -2621,6 +2678,58 @@ body {
   font-size: 13px;
   color: #9ca3af;
   text-align: center;
+}
+
+.items-layout--fixed .items-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.items-content__top {
+  flex-shrink: 0;
+}
+
+.items-content__grid-area {
+  flex-shrink: 0;
+  height: 440px;
+}
+
+.items-pagination {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.items-pagination__btn {
+  padding: 8px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #2563eb;
+  background: #eff3ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.items-pagination__btn:hover:not(:disabled) {
+  background: #2563eb;
+  color: #fff;
+}
+
+.items-pagination__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.items-pagination__info {
+  font-size: 14px;
+  font-weight: 500;
+  color: #6b7280;
 }
 
 .items-content__header {
