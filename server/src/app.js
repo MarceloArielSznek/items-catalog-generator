@@ -16,38 +16,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 
-app.set("trust proxy", 1);
+if (env.IS_PRODUCTION) {
+  app.set("trust proxy", 1);
+  app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+  app.use(cors({ origin: ["https://catalog.yallaprojects.com"] }));
 
-app.use(helmet({
-  contentSecurityPolicy: false,
-  crossOriginEmbedderPolicy: false,
-}));
+  const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, error: "Too many requests, please try again later" },
+  });
 
-const allowedOrigins = env.IS_PRODUCTION
-  ? ["https://catalog.yallaprojects.com"]
-  : ["http://localhost:5173"];
+  const uploadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, error: "Upload limit reached, please try again later" },
+  });
 
-app.use(cors({ origin: allowedOrigins }));
-
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, error: "Too many requests, please try again later" },
-});
-
-const uploadLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, error: "Upload limit reached, please try again later" },
-});
-
-app.use("/api", apiLimiter);
-app.use("/api/generate", uploadLimiter);
-app.use("/api/remove-background", uploadLimiter);
+  app.use("/api", apiLimiter);
+  app.use("/api/generate", uploadLimiter);
+  app.use("/api/remove-background", uploadLimiter);
+} else {
+  app.use(cors());
+}
 
 app.use(express.json());
 
