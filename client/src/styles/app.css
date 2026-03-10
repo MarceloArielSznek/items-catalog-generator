@@ -3223,6 +3223,25 @@ body {
     grid-template-columns: 1fr;
   }
 
+  .page--items-fixed {
+    height: auto;
+    overflow: visible;
+    padding-bottom: 100px;
+  }
+
+  .items-content__grid-area {
+    height: auto;
+  }
+
+  .items-pagination {
+    flex: 0;
+    padding: 16px 0;
+  }
+
+  .wa-selector {
+    flex-wrap: wrap;
+  }
+
   .items-layout {
     grid-template-columns: 1fr;
   }
