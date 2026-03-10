@@ -8,6 +8,9 @@ export default function Header() {
         <h1 className="header__title">Catalog Composer</h1>
       </div>
       <nav className="header__nav">
+        <NavLink to="/items" className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
+          Items
+        </NavLink>
         <NavLink to="/" end className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
           Scenes
         </NavLink>

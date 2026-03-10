@@ -16,6 +16,11 @@ const env = {
   GENERATED_DIR: path.resolve(SERVER_ROOT, process.env.GENERATED_DIR || "src/generated"),
   SCENES_DIR: path.resolve(SERVER_ROOT, process.env.SCENES_DIR || "src/scenes"),
   IS_PRODUCTION: process.env.NODE_ENV === "production",
+
+  PAYLOAD_API_URL: (process.env.API_BASE_URL || "https://www.attic-tech.com/").replace(/\/+$/, ""),
+  PAYLOAD_USER: process.env.API_USER || "",
+  PAYLOAD_PASSWORD: process.env.API_PASSWORD || "",
+  PAYLOAD_TIMEOUT: parseInt(process.env.API_TIMEOUT_MS, 10) || 15000,
 };
 
 env.MAX_FILE_SIZE_BYTES = env.MAX_FILE_SIZE_MB * 1024 * 1024;

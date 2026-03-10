@@ -55,7 +55,12 @@ export async function listScenes() {
       dirs.map(async (d) => {
         try {
           const raw = await fsp.readFile(metaPath(d.name), "utf-8");
-          return JSON.parse(raw);
+          const meta = JSON.parse(raw);
+          return {
+            ...meta,
+            backgroundUrl: `/scenes/${meta.id}/${meta.backgroundFile}`,
+            logoUrl: meta.logoFile ? `/scenes/${meta.id}/${meta.logoFile}` : null,
+          };
         } catch {
           return null;
         }

@@ -7,6 +7,8 @@ import LibraryPage from "./pages/LibraryPage.jsx";
 import AlbumDetailPage from "./pages/AlbumDetailPage.jsx";
 import ItemDetailPage from "./pages/ItemDetailPage.jsx";
 import ServicePhotoPage from "./pages/ServicePhotoPage.jsx";
+import ItemsManagerPage from "./pages/ItemsManagerPage.jsx";
+import PayloadItemDetailPage from "./pages/PayloadItemDetailPage.jsx";
 
 export default function App() {
   return (
@@ -17,6 +19,8 @@ export default function App() {
           <Route path="/" element={<SceneManagerPage />} />
           <Route path="/generate/:sceneId" element={<GeneratorPage />} />
           <Route path="/service-photos" element={<ServicePhotoPage />} />
+          <Route path="/items" element={<ItemsManagerPage />} />
+          <Route path="/items/:itemId" element={<PayloadItemDetailPage />} />
           <Route path="/library" element={<LibraryPage />} />
           <Route path="/library/:albumId" element={<AlbumDetailPage />} />
           <Route path="/library/:albumId/:itemId" element={<ItemDetailPage />} />

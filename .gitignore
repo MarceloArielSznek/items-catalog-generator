@@ -28,13 +28,5 @@ desktop.ini
 *.log
 npm-debug.log*
 
-# Server auth & production config
-.htpasswd
-ecosystem.config.cjs
-catalog.yallaprojects.com.nginx
-
-# Library data
-server/src/library/
-
 # Cursor
 .cursor/
