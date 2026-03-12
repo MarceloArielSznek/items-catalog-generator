@@ -37,8 +37,10 @@ export default function ItemsManagerPage() {
 
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState("name-asc");
   const [page, setPage] = useState(1);
 
+  const incomingWorkAreaId = location.state?.workAreaId ?? location.state?.fromWorkAreaId;
   const incomingCategoryId = location.state?.categoryId ?? location.state?.fromCategoryId;
 
   const loadWorkAreas = useCallback(async () => {
@@ -50,14 +52,17 @@ export default function ItemsManagerPage() {
       );
       setWorkAreas(sorted);
       if (sorted.length > 0 && !selectedWA) {
-        setSelectedWA(sorted[0]);
+        const restore = incomingWorkAreaId
+          ? sorted.find((wa) => String(wa.id) === String(incomingWorkAreaId))
+          : null;
+        setSelectedWA(restore || sorted[0]);
       }
     } catch (err) {
       setError(err.message);
     } finally {
       setLoadingWAs(false);
     }
-  }, []);
+  }, [incomingWorkAreaId]);
 
   useEffect(() => {
     loadWorkAreas();
@@ -128,14 +133,33 @@ export default function ItemsManagerPage() {
     setPage(1);
   }, [search]);
 
-  const filteredItems = search.trim()
-    ? items.filter((item) => {
-        const q = search.toLowerCase();
+  const filteredItems = (() => {
+    let result = items;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      result = result.filter((item) => {
         const name = (item.name || "").toLowerCase();
         const desc = (item.itemInfo || "").toLowerCase();
         return name.includes(q) || desc.includes(q);
-      })
-    : items;
+      });
+    }
+    return [...result].sort((a, b) => {
+      switch (sortBy) {
+        case "name-asc":
+          return (a.name || "").localeCompare(b.name || "");
+        case "name-desc":
+          return (b.name || "").localeCompare(a.name || "");
+        case "newest":
+          return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+        case "oldest":
+          return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+        case "updated":
+          return new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
+        default:
+          return 0;
+      }
+    });
+  })();
 
   const totalPages = Math.max(1, Math.ceil(filteredItems.length / ITEMS_PER_PAGE));
   const pagedItems = filteredItems.slice(
@@ -217,22 +241,35 @@ export default function ItemsManagerPage() {
               </div>
             )}
 
-            <div className="search-bar">
-              <input
-                className="search-bar__input"
-                type="text"
-                placeholder="Filter items by name..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              {search && (
-                <button
-                  className="search-bar__clear"
-                  onClick={() => setSearch("")}
-                >
-                  ✕
-                </button>
-              )}
+            <div className="items-toolbar">
+              <div className="search-bar search-bar--flex">
+                <input
+                  className="search-bar__input"
+                  type="text"
+                  placeholder="Filter items by name..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+                {search && (
+                  <button
+                    className="search-bar__clear"
+                    onClick={() => setSearch("")}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <select
+                className="items-sort"
+                value={sortBy}
+                onChange={(e) => { setSortBy(e.target.value); setPage(1); }}
+              >
+                <option value="name-asc">A → Z</option>
+                <option value="name-desc">Z → A</option>
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="updated">Recently updated</option>
+              </select>
             </div>
           </div>
 
@@ -251,7 +288,7 @@ export default function ItemsManagerPage() {
                     <div
                       key={item.id}
                       className="library-card"
-                      onClick={() => navigate(`/items/${item.id}`, { state: { fromCategoryId: selectedCat?.id } })}
+                      onClick={() => navigate(`/items/${item.id}`, { state: { fromWorkAreaId: selectedWA?.id, fromCategoryId: selectedCat?.id } })}
                     >
                       <div className="library-card__img-wrap">
                         {thumb ? (

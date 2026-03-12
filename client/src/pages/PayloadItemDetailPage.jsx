@@ -3,6 +3,7 @@ import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { fetchItem, updatePayloadItem, uploadItemMedia, detachItemMedia, invalidatePayloadCache } from "../services/payloadApi.js";
 import { listScenes, generateWithScene, removeBackground, processServiceImage } from "../services/api.js";
 import RichTextEditor from "../components/RichTextEditor.jsx";
+import { htmlToMarkdown, markdownToHtml, looksLikeHtml } from "../utils/markdownPayload.js";
 import ItemPreviewComposite from "../components/ItemPreviewComposite.jsx";
 import ModeSelector from "../components/ModeSelector.jsx";
 import FormatSelector from "../components/FormatSelector.jsx";
@@ -122,7 +123,8 @@ export default function PayloadItemDetailPage() {
       const data = res.data || res;
       setItem(data);
       setName(data.name || "");
-      setDescription(data.itemInfo || "");
+      const raw = data.itemInfo || "";
+      setDescription(looksLikeHtml(raw) ? raw : markdownToHtml(raw));
       setDirty(false);
       setMediaList(extractMediaList(data));
       setSelectedMedia(0);
@@ -158,7 +160,7 @@ export default function PayloadItemDetailPage() {
     setSaving(true);
     setSavedMsg("");
     try {
-      await updatePayloadItem(itemId, { name, description });
+      await updatePayloadItem(itemId, { name, description: htmlToMarkdown(description) });
       setDirty(false);
       const categoryId = item?.category?.id ?? item?.category;
       if (categoryId != null) invalidatePayloadCache(categoryId);
@@ -356,7 +358,7 @@ export default function PayloadItemDetailPage() {
   if (error && !item) {
     return (
       <main className="page">
-        <button className="btn btn--link" onClick={() => navigate("/items", { state: { categoryId: location.state?.fromCategoryId } })}>Back</button>
+        <button className="btn btn--link" onClick={() => navigate("/items", { state: { workAreaId: location.state?.fromWorkAreaId, categoryId: location.state?.fromCategoryId } })}>Back</button>
         <div className="error-banner">
           <span className="error-banner__icon">!</span>
           <span className="error-banner__message">{error}</span>
@@ -371,7 +373,7 @@ export default function PayloadItemDetailPage() {
 
   return (
     <main className="page">
-      <button className="btn btn--link" onClick={() => navigate("/items", { state: { categoryId: location.state?.fromCategoryId } })}>Back to Items</button>
+      <button className="btn btn--link" onClick={() => navigate("/items", { state: { workAreaId: location.state?.fromWorkAreaId, categoryId: location.state?.fromCategoryId } })}>Back to Items</button>
 
       {error && (
         <div className="error-banner" style={{ marginBottom: 16 }}>
