@@ -54,6 +54,24 @@ export function invalidateItemsCacheForCategory(categoryId) {
   if (categoryId != null) itemsByCategoryCache.delete(String(categoryId));
 }
 
+/** Fetch all items across all categories (bypasses cache). For scripts only. */
+export async function getAllItems() {
+  const categories = await getCategories();
+  const items = [];
+  for (const cat of categories) {
+    const token = await getToken();
+    const url = `${buildUrl(CATEGORIES_COLLECTION, cat.id)}?depth=2`;
+    const category = await payloadFetch(url, { headers: authHeaders(token) });
+    const rawItems = Array.isArray(category?.items) ? category.items : [];
+    for (const entry of rawItems) {
+      if (entry && typeof entry === "object" && entry.id != null) {
+        items.push({ ...entry, _categoryName: cat.name, _categoryId: cat.id });
+      }
+    }
+  }
+  return items;
+}
+
 function buildUrl(...segments) {
   const parts = [env.PAYLOAD_API_URL, API_PREFIX, ...segments]
     .filter(Boolean)
