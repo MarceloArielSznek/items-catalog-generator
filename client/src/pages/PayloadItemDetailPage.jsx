@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { fetchItem, updatePayloadItem, uploadItemMedia, detachItemMedia, invalidatePayloadCache } from "../services/payloadApi.js";
+import { fetchItem, updatePayloadItem, uploadItemMedia, detachItemMedia, invalidatePayloadCache, fetchFactors, fetchAdditionalCosts } from "../services/payloadApi.js";
 import { listScenes, generateWithScene, removeBackground, processServiceImage } from "../services/api.js";
 import RichTextEditor from "../components/RichTextEditor.jsx";
 import { htmlToMarkdown, markdownToHtml, looksLikeHtml } from "../utils/markdownPayload.js";
@@ -13,6 +13,16 @@ import { COMPOSITION_DEFAULTS, LIGHTING_DEFAULTS } from "../../../shared/constan
 import config from "../config.js";
 
 const PAYLOAD_BASE = "https://www.attic-tech.com";
+
+const UNIT_OPTIONS = [
+  "",
+  "Sq. Ft.",
+  "Big Sq.",
+  "Dollars",
+  "Linear Feet",
+  "Each",
+  "Hours",
+];
 
 function resolveMediaUrl(url) {
   if (!url) return null;
@@ -57,7 +67,7 @@ function buildCssFilter(lighting) {
   return f;
 }
 
-export default function PayloadItemDetailPage() {
+export default function PayloadItemDetailPage({ isModal = false }) {
   const { itemId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -69,6 +79,18 @@ export default function PayloadItemDetailPage() {
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [unit, setUnit] = useState("");
+  const [materialCost, setMaterialCost] = useState("");
+  const [laborHours, setLaborHours] = useState("");
+  const [multiplierOverride, setMultiplierOverride] = useState("");
+  const [subItem, setSubItem] = useState(false);
+  const [requiresInfo, setRequiresInfo] = useState(false);
+  const [factors, setFactors] = useState([]);
+  const [additionalCosts, setAdditionalCosts] = useState([]);
+  const [additionalCostIdToAdd, setAdditionalCostIdToAdd] = useState("");
+  const [factorsOptions, setFactorsOptions] = useState([]);
+  const [additionalCostsOptions, setAdditionalCostsOptions] = useState([]);
+  const [extraFields, setExtraFields] = useState({});
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
@@ -114,6 +136,27 @@ export default function PayloadItemDetailPage() {
   const svcPhotoRef = useRef(null);
   const svcLogoRef = useRef(null);
 
+  const RESERVED_ITEM_KEYS = new Set([
+    "id", "name", "itemInfo", "category", "media", "createdAt", "updatedAt",
+    "unit", "materialCost", "laborHours", "multiplierOverride", "subItem", "requiresInfo",
+    "factors", "additional_costs",
+  ]);
+
+  function getScalarExtraFields(data) {
+    if (!data || typeof data !== "object") return {};
+    const out = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (RESERVED_ITEM_KEYS.has(key)) continue;
+      if (value === null || value === undefined) continue;
+      if (typeof value === "object" && !Array.isArray(value)) continue;
+      if (Array.isArray(value)) continue;
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        out[key] = value;
+      }
+    }
+    return out;
+  }
+
   // ── Load item ──
   const loadItem = useCallback(async () => {
     setLoading(true);
@@ -125,6 +168,36 @@ export default function PayloadItemDetailPage() {
       setName(data.name || "");
       const raw = data.itemInfo || "";
       setDescription(looksLikeHtml(raw) ? raw : markdownToHtml(raw));
+      setUnit(data.unit ?? "");
+      setMaterialCost(data.materialCost != null ? String(data.materialCost) : "");
+      setLaborHours(data.laborHours != null ? String(data.laborHours) : "");
+      setMultiplierOverride(data.multiplierOverride != null && data.multiplierOverride !== "" ? String(data.multiplierOverride) : "");
+      setSubItem(!!data.subItem);
+      setRequiresInfo(!!data.requiresInfo);
+      const fac = data.factors;
+      const facList = fac == null ? [] : Array.isArray(fac)
+        ? fac
+        : [fac];
+      setFactors(facList.map((entry) => {
+        if (entry == null) return { id: null, label: "" };
+        if (typeof entry === "object" && "id" in entry) {
+          return { id: entry.id, label: entry.name || entry.title || `ID: ${entry.id}` };
+        }
+        return { id: entry, label: `ID: ${entry}` };
+      }).filter((x) => x.id != null));
+      const ac = data.additional_costs;
+      if (Array.isArray(ac)) {
+        setAdditionalCosts(ac.map((entry) => {
+          if (entry == null) return { id: null, label: "" };
+          if (typeof entry === "object" && "id" in entry) {
+            return { id: entry.id, label: entry.title || entry.name || `ID: ${entry.id}` };
+          }
+          return { id: entry, label: `ID: ${entry}` };
+        }).filter((x) => x.id != null));
+      } else {
+        setAdditionalCosts([]);
+      }
+      setExtraFields(getScalarExtraFields(data));
       setDirty(false);
       setMediaList(extractMediaList(data));
       setSelectedMedia(0);
@@ -147,6 +220,24 @@ export default function PayloadItemDetailPage() {
   }, []);
 
   useEffect(() => {
+    (async () => {
+      try {
+        const list = await fetchFactors();
+        setFactorsOptions(Array.isArray(list) ? list : []);
+      } catch { /* not critical */ }
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await fetchAdditionalCosts();
+        setAdditionalCostsOptions(Array.isArray(list) ? list : []);
+      } catch { /* not critical */ }
+    })();
+  }, []);
+
+  useEffect(() => {
     setSelectedScene(selectedSceneId ? scenes.find((s) => s.id === selectedSceneId) || null : null);
   }, [selectedSceneId, scenes]);
 
@@ -160,7 +251,23 @@ export default function PayloadItemDetailPage() {
     setSaving(true);
     setSavedMsg("");
     try {
-      await updatePayloadItem(itemId, { name, description: htmlToMarkdown(description) });
+      const materialCostNum = materialCost === "" ? null : Number(materialCost);
+      const laborHoursNum = laborHours === "" ? null : Number(laborHours);
+      const multiplierNum = multiplierOverride === "" ? null : Number(multiplierOverride);
+      const payload = {
+        name,
+        description: htmlToMarkdown(description),
+        unit: unit || undefined,
+        materialCost: materialCostNum != null && !Number.isNaN(materialCostNum) ? materialCostNum : undefined,
+        laborHours: laborHoursNum != null && !Number.isNaN(laborHoursNum) ? laborHoursNum : undefined,
+        multiplierOverride: multiplierNum != null && !Number.isNaN(multiplierNum) ? multiplierNum : undefined,
+        subItem,
+        requiresInfo,
+        factors: factors.map((f) => f.id).filter((id) => id != null),
+        additional_costs: additionalCosts.map((c) => c.id).filter((id) => id != null),
+        ...extraFields,
+      };
+      await updatePayloadItem(itemId, payload);
       setDirty(false);
       const categoryId = item?.category?.id ?? item?.category;
       if (categoryId != null) invalidatePayloadCache(categoryId);
@@ -168,6 +275,15 @@ export default function PayloadItemDetailPage() {
     } catch (err) { setError(err.message); }
     finally { setSaving(false); }
   };
+
+  const setExtraField = useCallback((key, value) => {
+    setExtraFields((prev) => ({ ...prev, [key]: value }));
+    setDirty(true);
+  }, []);
+
+  function fieldLabel(key) {
+    return key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase()).trim();
+  }
 
   // ── Direct image upload ──
   const handleUpload = async (e) => {
@@ -358,7 +474,9 @@ export default function PayloadItemDetailPage() {
   if (error && !item) {
     return (
       <main className="page">
-        <button className="btn btn--link" onClick={() => navigate("/items", { state: { workAreaId: location.state?.fromWorkAreaId, categoryId: location.state?.fromCategoryId } })}>Back</button>
+        {!isModal && (
+          <button className="btn btn--link" onClick={() => navigate("/items", { state: { workAreaId: location.state?.fromWorkAreaId, categoryId: location.state?.fromCategoryId } })}>Back</button>
+        )}
         <div className="error-banner">
           <span className="error-banner__icon">!</span>
           <span className="error-banner__message">{error}</span>
@@ -373,7 +491,9 @@ export default function PayloadItemDetailPage() {
 
   return (
     <main className="page">
-      <button className="btn btn--link" onClick={() => navigate("/items", { state: { workAreaId: location.state?.fromWorkAreaId, categoryId: location.state?.fromCategoryId } })}>Back to Items</button>
+      {!isModal && (
+        <button className="btn btn--link" onClick={() => navigate("/items", { state: { workAreaId: location.state?.fromWorkAreaId, categoryId: location.state?.fromCategoryId } })}>Back to Items</button>
+      )}
 
       {error && (
         <div className="error-banner" style={{ marginBottom: 16 }}>
@@ -384,6 +504,225 @@ export default function PayloadItemDetailPage() {
 
       {/* ════════ ITEM INFO ════════ */}
       <div className="payload-detail">
+        <div className="payload-detail__editor">
+          {categoryName && (
+            <div className="payload-detail__field">
+              <label className="payload-detail__label">Category</label>
+              <div className="payload-detail__readonly">{categoryName}</div>
+            </div>
+          )}
+
+          <div className="payload-detail__field">
+            <label className="payload-detail__label">Item Name</label>
+            <input className="payload-detail__input" type="text" value={name} placeholder="Enter item name"
+              onChange={(e) => { setName(e.target.value); setDirty(true); }} />
+          </div>
+
+          <div className="payload-detail__field">
+            <label className="payload-detail__label">Description</label>
+            <RichTextEditor content={description} onChange={(html) => { setDescription(html); setDirty(true); }} />
+          </div>
+
+          <div className="payload-detail__field">
+            <label className="payload-detail__label">Unit</label>
+            <select
+              className="payload-detail__input"
+              value={unit}
+              onChange={(e) => { setUnit(e.target.value); setDirty(true); }}
+            >
+              {UNIT_OPTIONS.map((opt) => (
+                <option key={opt || "__empty__"} value={opt}>
+                  {opt || "— Select unit —"}
+                </option>
+              ))}
+              {unit && !UNIT_OPTIONS.includes(unit) && (
+                <option value={unit}>{unit}</option>
+              )}
+            </select>
+          </div>
+
+          <div className="payload-detail__field">
+            <label className="payload-detail__label">Material Cost</label>
+            <input className="payload-detail__input" type="number" step="any" min="0" value={materialCost} placeholder="0.00"
+              onChange={(e) => { setMaterialCost(e.target.value); setDirty(true); }} />
+          </div>
+
+          <div className="payload-detail__field">
+            <label className="payload-detail__label">Labor Hours</label>
+            <input className="payload-detail__input" type="number" step="any" min="0" value={laborHours} placeholder="0"
+              onChange={(e) => { setLaborHours(e.target.value); setDirty(true); }} />
+          </div>
+
+          <div className="payload-detail__field">
+            <label className="payload-detail__label">Multiplier Override</label>
+            <input className="payload-detail__input" type="number" step="any" value={multiplierOverride} placeholder="Optional"
+              onChange={(e) => { setMultiplierOverride(e.target.value); setDirty(true); }} />
+          </div>
+
+          <div className="payload-detail__field payload-detail__field--checkboxes">
+            <label className="payload-detail__checkbox-wrap">
+              <input type="checkbox" checked={subItem} onChange={(e) => { setSubItem(e.target.checked); setDirty(true); }} />
+              <span>Sub Item</span>
+            </label>
+            <label className="payload-detail__checkbox-wrap">
+              <input type="checkbox" checked={requiresInfo} onChange={(e) => { setRequiresInfo(e.target.checked); setDirty(true); }} />
+              <span>Requires Info</span>
+            </label>
+          </div>
+
+          <div className="payload-detail__field">
+            <label className="payload-detail__label">Factors</label>
+            <div className="payload-detail__chips">
+              {factors.map((f) => (
+                <span key={f.id} className="payload-detail__chip">
+                  {f.label}
+                  <button type="button" className="payload-detail__chip-remove" onClick={() => { setFactors((prev) => prev.filter((x) => x.id !== f.id)); setDirty(true); }} aria-label="Remove">×</button>
+                </span>
+              ))}
+            </div>
+            <div className="payload-detail__relation-row">
+              <select
+                className="payload-detail__input"
+                value=""
+                onChange={(e) => {
+                  const id = e.target.value === "" ? null : Number(e.target.value);
+                  e.target.value = "";
+                  if (id != null && !factors.some((c) => c.id === id)) {
+                    const opt = factorsOptions.find((a) => a.id === id);
+                    setFactors((prev) => [...prev, { id, label: opt ? opt.label : `ID: ${id}` }]);
+                    setDirty(true);
+                  }
+                }}
+              >
+                <option value="">Select to add...</option>
+                {factorsOptions
+                  .filter((a) => !factors.some((c) => c.id === a.id))
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>{a.label}</option>
+                  ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="payload-detail__field">
+            <label className="payload-detail__label">Additional costs</label>
+            <div className="payload-detail__chips">
+              {additionalCosts.map((c) => (
+                <span key={c.id} className="payload-detail__chip">
+                  {c.label}
+                  <button type="button" className="payload-detail__chip-remove" onClick={() => { setAdditionalCosts((prev) => prev.filter((x) => x.id !== c.id)); setDirty(true); }} aria-label="Remove">×</button>
+                </span>
+              ))}
+            </div>
+            <div className="payload-detail__relation-row">
+              <select
+                className="payload-detail__input"
+                value=""
+                onChange={(e) => {
+                  const id = e.target.value === "" ? null : Number(e.target.value);
+                  e.target.value = "";
+                  if (id != null && !additionalCosts.some((c) => c.id === id)) {
+                    const opt = additionalCostsOptions.find((a) => a.id === id);
+                    setAdditionalCosts((prev) => [...prev, { id, label: opt ? opt.label : `ID: ${id}` }]);
+                    setDirty(true);
+                  }
+                }}
+              >
+                <option value="">Select to add...</option>
+                {additionalCostsOptions
+                  .filter((a) => !additionalCosts.some((c) => c.id === a.id))
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>{a.label}</option>
+                  ))}
+              </select>
+              {additionalCostsOptions.length === 0 && (
+                <span className="payload-detail__hint">Load additional costs from Payload or add by ID below</span>
+              )}
+            </div>
+            {additionalCostsOptions.length === 0 && (
+              <div className="payload-detail__relation-row" style={{ marginTop: 8 }}>
+                <input
+                  className="payload-detail__input"
+                  type="number"
+                  placeholder="Add by ID"
+                  value={additionalCostIdToAdd}
+                  onChange={(e) => setAdditionalCostIdToAdd(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn btn--secondary btn--sm"
+                  onClick={() => {
+                    const id = additionalCostIdToAdd === "" ? null : Number(additionalCostIdToAdd);
+                    if (id != null && !Number.isNaN(id) && !additionalCosts.some((c) => c.id === id)) {
+                      setAdditionalCosts((prev) => [...prev, { id, label: `ID: ${id}` }]);
+                      setAdditionalCostIdToAdd("");
+                      setDirty(true);
+                    }
+                  }}
+                >
+                  +
+                </button>
+              </div>
+            )}
+          </div>
+
+          {Object.keys(extraFields).length > 0 && (
+            <>
+              <div className="payload-detail__field payload-detail__field--divider">
+                <span className="payload-detail__label">Other fields</span>
+              </div>
+              {Object.entries(extraFields).map(([key, value]) => (
+                <div key={key} className="payload-detail__field">
+                  <label className="payload-detail__label">{fieldLabel(key)}</label>
+                  {typeof value === "boolean" ? (
+                    <label className="payload-detail__checkbox-wrap">
+                      <input type="checkbox" checked={!!extraFields[key]}
+                        onChange={(e) => setExtraField(key, e.target.checked)} />
+                      <span>{fieldLabel(key)}</span>
+                    </label>
+                  ) : (
+                    <input
+                      className="payload-detail__input"
+                      type={typeof value === "number" ? "number" : "text"}
+                      step={typeof value === "number" ? "any" : undefined}
+                      value={extraFields[key] ?? ""}
+                      onChange={(e) => setExtraField(key, typeof value === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)}
+                    />
+                  )}
+                </div>
+              ))}
+            </>
+          )}
+
+          {(item?.createdAt || item?.updatedAt) && (
+            <div className="payload-detail__meta payload-detail__meta--top">
+              {item?.createdAt && (
+                <div className="payload-detail__meta-row">
+                  <span>Created</span>
+                  <span>{new Date(item.createdAt).toLocaleString()}</span>
+                </div>
+              )}
+              {item?.updatedAt && (
+                <div className="payload-detail__meta-row">
+                  <span>Last updated</span>
+                  <span>{new Date(item.updatedAt).toLocaleString()}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="payload-detail__actions">
+            <button className="btn btn--primary" onClick={handleSave} disabled={!dirty || saving}>
+              {saving ? "Saving..." : "Save to Payload"}
+            </button>
+            <button className="btn btn--secondary" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+              {uploading ? "Uploading..." : "Upload Image"}
+            </button>
+            <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleUpload} />
+            {savedMsg && <span className="payload-detail__saved-msg">{savedMsg}</span>}
+          </div>
+        </div>
+
         <div className="payload-detail__images">
           <div className="payload-detail__main-img-wrap">
             {currentImage ? (
@@ -412,59 +751,6 @@ export default function PayloadItemDetailPage() {
                   </button>
                 </div>
               ))}
-            </div>
-          )}
-        </div>
-
-        <div className="payload-detail__editor">
-          {categoryName && (
-            <div className="payload-detail__field">
-              <label className="payload-detail__label">Category</label>
-              <div className="payload-detail__readonly">{categoryName}</div>
-            </div>
-          )}
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Item Name</label>
-            <input className="payload-detail__input" type="text" value={name} placeholder="Enter item name"
-              onChange={(e) => { setName(e.target.value); setDirty(true); }} />
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Description</label>
-            <RichTextEditor content={description} onChange={(html) => { setDescription(html); setDirty(true); }} />
-          </div>
-
-          {item?.unit && (
-            <div className="payload-detail__field">
-              <label className="payload-detail__label">Unit</label>
-              <div className="payload-detail__readonly">{item.unit}</div>
-            </div>
-          )}
-          {item?.materialCost != null && (
-            <div className="payload-detail__field">
-              <label className="payload-detail__label">Material Cost</label>
-              <div className="payload-detail__readonly">${Number(item.materialCost).toFixed(2)}</div>
-            </div>
-          )}
-
-          <div className="payload-detail__actions">
-            <button className="btn btn--primary" onClick={handleSave} disabled={!dirty || saving}>
-              {saving ? "Saving..." : "Save to Payload"}
-            </button>
-            <button className="btn btn--secondary" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-              {uploading ? "Uploading..." : "Upload Image"}
-            </button>
-            <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleUpload} />
-            {savedMsg && <span className="payload-detail__saved-msg">{savedMsg}</span>}
-          </div>
-
-          {item?.updatedAt && (
-            <div className="payload-detail__meta">
-              <div className="payload-detail__meta-row">
-                <span>Last updated</span>
-                <span>{new Date(item.updatedAt).toLocaleDateString()}</span>
-              </div>
             </div>
           )}
         </div>

@@ -1,10 +1,17 @@
 import { useState, useEffect, useCallback } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, useParams } from "react-router-dom";
 import {
   fetchWorkAreas,
   fetchCategoriesByWorkArea,
+  fetchCategories,
   fetchItemsByCategory,
+  deleteWorkArea,
+  deleteCategory,
+  invalidatePayloadCache,
 } from "../services/payloadApi.js";
+import PayloadItemDetailPage from "./PayloadItemDetailPage.jsx";
+import WorkAreaFormModal from "../components/WorkAreaFormModal.jsx";
+import CategoryFormModal from "../components/CategoryFormModal.jsx";
 
 function getItemThumbnail(item, baseUrl) {
   const media = item?.media;
@@ -23,6 +30,7 @@ const ITEMS_PER_PAGE = 8;
 export default function ItemsManagerPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { itemId } = useParams();
 
   const [workAreas, setWorkAreas] = useState([]);
   const [selectedWA, setSelectedWA] = useState(null);
@@ -39,6 +47,12 @@ export default function ItemsManagerPage() {
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("name-asc");
   const [page, setPage] = useState(1);
+
+  const [activeTab, setActiveTab] = useState("items");
+  const [allCategories, setAllCategories] = useState([]);
+  const [loadingAllCategories, setLoadingAllCategories] = useState(false);
+  const [workAreaModal, setWorkAreaModal] = useState(null);
+  const [categoryModal, setCategoryModal] = useState(null);
 
   const incomingWorkAreaId = location.state?.workAreaId ?? location.state?.fromWorkAreaId;
   const incomingCategoryId = location.state?.categoryId ?? location.state?.fromCategoryId;
@@ -67,6 +81,16 @@ export default function ItemsManagerPage() {
   useEffect(() => {
     loadWorkAreas();
   }, [loadWorkAreas]);
+
+  useEffect(() => {
+    if (activeTab !== "categories") return;
+    setLoadingAllCategories(true);
+    setError(null);
+    fetchCategories()
+      .then((res) => setAllCategories(res?.data ?? res ?? []))
+      .catch((err) => setError(err.message))
+      .finally(() => setLoadingAllCategories(false));
+  }, [activeTab]);
 
   const loadCategories = useCallback(async (waId) => {
     if (!waId) return;
@@ -133,6 +157,28 @@ export default function ItemsManagerPage() {
     setPage(1);
   }, [search]);
 
+  const closeItemModal = useCallback(() => {
+    navigate("/items", { state: { workAreaId: selectedWA?.id, categoryId: selectedCat?.id } });
+  }, [navigate, selectedWA?.id, selectedCat?.id]);
+
+  useEffect(() => {
+    if (!itemId) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") closeItemModal();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [itemId, closeItemModal]);
+
+  useEffect(() => {
+    if (itemId) {
+      document.body.style.overflow = "hidden";
+    }
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [itemId]);
+
   const filteredItems = (() => {
     let result = items;
     if (search.trim()) {
@@ -193,19 +239,124 @@ export default function ItemsManagerPage() {
         </div>
       )}
 
-      <div className="wa-selector">
-        {workAreas.map((wa) => (
-          <button
-            key={wa.id}
-            className={`wa-selector__btn ${selectedWA?.id === wa.id ? "wa-selector__btn--active" : ""}`}
-            onClick={() => setSelectedWA(wa)}
-          >
-            {wa.name || "Untitled"}
-          </button>
-        ))}
+      <div className="config-tabs">
+        <button
+          type="button"
+          className={`config-tabs__btn ${activeTab === "items" ? "config-tabs__btn--active" : ""}`}
+          onClick={() => setActiveTab("items")}
+        >
+          Items
+        </button>
+        <button
+          type="button"
+          className={`config-tabs__btn ${activeTab === "work-areas" ? "config-tabs__btn--active" : ""}`}
+          onClick={() => setActiveTab("work-areas")}
+        >
+          Work Areas
+        </button>
+        <button
+          type="button"
+          className={`config-tabs__btn ${activeTab === "categories" ? "config-tabs__btn--active" : ""}`}
+          onClick={() => setActiveTab("categories")}
+        >
+          Item Categories
+        </button>
       </div>
 
-      <div className="items-layout items-layout--fixed">
+      {activeTab === "work-areas" && (
+        <section className="config-section">
+          <div className="config-section__header">
+            <h3 className="config-section__title">Work Areas</h3>
+            <button type="button" className="btn btn--primary" onClick={() => setWorkAreaModal({ id: null })}>
+              Add Work Area
+            </button>
+          </div>
+          <ul className="config-list">
+            {(Array.isArray(workAreas) ? workAreas : workAreas?.data ?? []).map((wa) => (
+              <li key={wa.id} className="config-list__item">
+                <span className="config-list__label">{wa.name || "Untitled"}</span>
+                <div className="config-list__actions">
+                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => setWorkAreaModal({ id: wa.id })}>Edit</button>
+                  <button
+                    type="button"
+                    className="btn btn--ghost btn--sm config-list__delete"
+                    onClick={() => {
+                      if (confirm(`Delete work area "${wa.name || "Untitled"}"? This may affect categories linked to it.`)) {
+                        deleteWorkArea(wa.id).then(() => loadWorkAreas()).catch((e) => setError(e.message));
+                      }
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {!(Array.isArray(workAreas) ? workAreas : workAreas?.data ?? []).length && !loadingWAs && (
+            <p className="config-section__empty">No work areas yet. Add one to get started.</p>
+          )}
+        </section>
+      )}
+
+      {activeTab === "categories" && (
+        <section className="config-section">
+          <div className="config-section__header">
+            <h3 className="config-section__title">Item Categories</h3>
+            <button type="button" className="btn btn--primary" onClick={() => setCategoryModal({ id: null })}>
+              Add Category
+            </button>
+          </div>
+          {loadingAllCategories ? (
+            <p className="config-section__empty">Loading categories...</p>
+          ) : (
+            <>
+              <ul className="config-list">
+                {allCategories.map((cat) => (
+                  <li key={cat.id} className="config-list__item">
+                    <span className="config-list__label">{cat.title || cat.name || "Untitled"}</span>
+                    <div className="config-list__actions">
+                      <button type="button" className="btn btn--ghost btn--sm" onClick={() => setCategoryModal({ id: cat.id })}>Edit</button>
+                      <button
+                        type="button"
+                        className="btn btn--ghost btn--sm config-list__delete"
+                        onClick={() => {
+                          if (confirm(`Delete category "${cat.title || cat.name || "Untitled"}"?`)) {
+                            deleteCategory(cat.id).then(() => {
+                              setAllCategories((prev) => prev.filter((c) => c.id !== cat.id));
+                              invalidatePayloadCache();
+                            }).catch((e) => setError(e.message));
+                          }
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              {allCategories.length === 0 && (
+                <p className="config-section__empty">No categories yet. Add one to get started.</p>
+              )}
+            </>
+          )}
+        </section>
+      )}
+
+      {activeTab === "items" && (
+        <>
+          <div className="wa-selector">
+            {workAreas.map((wa) => (
+              <button
+                key={wa.id}
+                className={`wa-selector__btn ${selectedWA?.id === wa.id ? "wa-selector__btn--active" : ""}`}
+                onClick={() => setSelectedWA(wa)}
+              >
+                {wa.name || "Untitled"}
+              </button>
+            ))}
+          </div>
+
+          <div className="items-layout items-layout--fixed">
         <aside className="items-sidebar">
           <div className="items-sidebar__header">Categories</div>
           {loadingCats ? (
@@ -341,7 +492,51 @@ export default function ItemsManagerPage() {
             </div>
           )}
         </section>
-      </div>
+          </div>
+        </>
+      )}
+
+      {workAreaModal && (
+        <WorkAreaFormModal
+          workAreaId={workAreaModal.id}
+          onClose={() => setWorkAreaModal(null)}
+          onSaved={() => loadWorkAreas()}
+        />
+      )}
+      {categoryModal && (
+        <CategoryFormModal
+          categoryId={categoryModal.id}
+          onClose={() => setCategoryModal(null)}
+          onSaved={() => fetchCategories().then((res) => setAllCategories(res?.data ?? res ?? []))}
+        />
+      )}
+
+      {itemId && (
+        <div
+          className="item-detail-modal__overlay"
+          onClick={closeItemModal}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Item detail"
+        >
+          <div
+            className="item-detail-modal__content"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="item-detail-modal__close"
+              onClick={closeItemModal}
+              aria-label="Close"
+            >
+              ✕
+            </button>
+            <div className="item-detail-modal__body">
+              <PayloadItemDetailPage isModal />
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

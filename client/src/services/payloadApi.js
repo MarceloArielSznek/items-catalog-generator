@@ -67,6 +67,66 @@ export async function fetchCategories() {
   return categoriesCache.data;
 }
 
+export async function fetchWorkArea(id) {
+  const body = await request(`${BASE}/work-areas/${id}`);
+  return body.data ?? body;
+}
+
+export async function createWorkArea(payload) {
+  const body = await request(`${BASE}/work-areas`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  invalidatePayloadCache();
+  return body.data ?? body;
+}
+
+export async function updateWorkArea(id, payload) {
+  const body = await request(`${BASE}/work-areas/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  invalidatePayloadCache();
+  return body.data ?? body;
+}
+
+export async function deleteWorkArea(id) {
+  await request(`${BASE}/work-areas/${id}`, { method: "DELETE" });
+  invalidatePayloadCache();
+}
+
+export async function fetchCategory(id) {
+  const body = await request(`${BASE}/categories/${id}`);
+  return body.data ?? body;
+}
+
+export async function createCategory(payload) {
+  const body = await request(`${BASE}/categories`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  invalidatePayloadCache();
+  return body.data ?? body;
+}
+
+export async function updateCategory(id, payload) {
+  const body = await request(`${BASE}/categories/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  invalidatePayloadCache();
+  return body.data ?? body;
+}
+
+export async function deleteCategory(id) {
+  await request(`${BASE}/categories/${id}`, { method: "DELETE" });
+  invalidatePayloadCache();
+}
+
 export async function fetchItemsByCategory(categoryId) {
   const now = Date.now();
   const entry = itemsCache.get(String(categoryId));
@@ -82,15 +142,35 @@ export async function fetchItemsByCategory(categoryId) {
   return itemsCache.get(String(categoryId)).data;
 }
 
+export async function fetchAllItems() {
+  const body = await request(`${BASE}/items`);
+  return body.data ?? body ?? [];
+}
+
 export async function fetchItem(itemId) {
   return request(`${BASE}/items/${itemId}`);
 }
 
-export async function updatePayloadItem(itemId, { name, description }) {
+export async function fetchFactors() {
+  const body = await request(`${BASE}/factors`);
+  return body.data ?? body ?? [];
+}
+
+export async function fetchAdditionalCosts() {
+  const body = await request(`${BASE}/additional-costs`);
+  return body.data ?? body ?? [];
+}
+
+export async function fetchOrganizations() {
+  const body = await request(`${BASE}/organizations`);
+  return body.data ?? body ?? [];
+}
+
+export async function updatePayloadItem(itemId, payload) {
   return request(`${BASE}/items/${itemId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, description }),
+    body: JSON.stringify(payload),
   });
 }
 
