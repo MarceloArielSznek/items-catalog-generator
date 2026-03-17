@@ -8,10 +8,15 @@ const WORK_AREAS_COLLECTION = "work-areas";
 const CATEGORIES_COLLECTION = "item-categories";
 const ITEMS_COLLECTION = "items";
 const MEDIA_COLLECTION = "media";
+const FACTORS_COLLECTION = "factors";
+const ADDITIONAL_COSTS_COLLECTION = "additional-costs";
+const ORGANIZATIONS_COLLECTION = "organizations";
 const ITEM_MEDIA_FIELD = "media";
 const ITEM_NAME_FIELD = "name";
 const ITEM_DESCRIPTION_FIELD = "itemInfo";
 const ITEM_CATEGORY_FIELD = "category";
+const ITEM_UNIT_FIELD = "unit";
+const ITEM_MATERIAL_COST_FIELD = "materialCost";
 const PAGE_LIMIT = 100;
 const QUERY_DEPTH = 1;
 const TOKEN_TTL_MS = 25 * 60 * 1000;
@@ -52,6 +57,18 @@ function setCachedItems(categoryId, data) {
 
 export function invalidateItemsCacheForCategory(categoryId) {
   if (categoryId != null) itemsByCategoryCache.delete(String(categoryId));
+}
+
+export function invalidateWorkAreasCache() {
+  workAreasCache.data = null;
+  workAreasCache.expires = 0;
+  categoriesByWorkAreaCache.clear();
+}
+
+export function invalidateCategoriesCache() {
+  categoriesCache.data = null;
+  categoriesCache.expires = 0;
+  categoriesByWorkAreaCache.clear();
 }
 
 function buildUrl(...segments) {
@@ -152,11 +169,54 @@ export async function getWorkAreas() {
     return workAreasCache.data;
   }
   const docs = await fetchAllPages(WORK_AREAS_COLLECTION, { depth: "0" });
-  const workAreas = docs.map(({ id, name }) => ({ id, name }));
+  const workAreas = docs.map((doc) => ({ ...doc, id: doc.id, name: doc.name }));
   logger.info(`Fetched ${workAreas.length} work areas from Payload`);
   workAreasCache.data = workAreas;
   workAreasCache.expires = Date.now() + CACHE_TTL_MS;
   return workAreas;
+}
+
+export async function getWorkArea(id) {
+  if (!id) throw new Error("Work area ID is required.");
+  const token = await getToken();
+  const url = `${buildUrl(WORK_AREAS_COLLECTION, id)}?depth=1`;
+  return payloadFetch(url, { headers: authHeaders(token) });
+}
+
+export async function createWorkArea(body) {
+  const token = await getToken();
+  const url = buildUrl(WORK_AREAS_COLLECTION);
+  const result = await payloadFetch(url, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  invalidateWorkAreasCache();
+  logger.info("Created work area in Payload", { id: result?.id });
+  return result;
+}
+
+export async function updateWorkArea(id, body) {
+  if (!id) throw new Error("Work area ID is required.");
+  const token = await getToken();
+  const url = buildUrl(WORK_AREAS_COLLECTION, id);
+  const result = await payloadFetch(url, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  invalidateWorkAreasCache();
+  logger.info("Updated work area in Payload", { id });
+  return result;
+}
+
+export async function deleteWorkArea(id) {
+  if (!id) throw new Error("Work area ID is required.");
+  const token = await getToken();
+  const url = buildUrl(WORK_AREAS_COLLECTION, id);
+  await payloadFetch(url, { method: "DELETE", headers: authHeaders(token) });
+  invalidateWorkAreasCache();
+  logger.info("Deleted work area from Payload", { id });
 }
 
 export async function getCategoriesByWorkArea(workAreaId) {
@@ -195,6 +255,52 @@ export async function getCategories() {
   return categories;
 }
 
+export async function getCategory(id) {
+  if (!id) throw new Error("Category ID is required.");
+  const token = await getToken();
+  const url = `${buildUrl(CATEGORIES_COLLECTION, id)}?depth=1`;
+  return payloadFetch(url, { headers: authHeaders(token) });
+}
+
+export async function createCategory(body) {
+  const token = await getToken();
+  const url = buildUrl(CATEGORIES_COLLECTION);
+  const result = await payloadFetch(url, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  invalidateCategoriesCache();
+  invalidateWorkAreasCache();
+  logger.info("Created item category in Payload", { id: result?.id });
+  return result;
+}
+
+export async function updateCategory(id, body) {
+  if (!id) throw new Error("Category ID is required.");
+  const token = await getToken();
+  const url = buildUrl(CATEGORIES_COLLECTION, id);
+  const result = await payloadFetch(url, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  invalidateCategoriesCache();
+  invalidateWorkAreasCache();
+  logger.info("Updated item category in Payload", { id });
+  return result;
+}
+
+export async function deleteCategory(id) {
+  if (!id) throw new Error("Category ID is required.");
+  const token = await getToken();
+  const url = buildUrl(CATEGORIES_COLLECTION, id);
+  await payloadFetch(url, { method: "DELETE", headers: authHeaders(token) });
+  invalidateCategoriesCache();
+  invalidateWorkAreasCache();
+  logger.info("Deleted item category from Payload", { id });
+}
+
 export async function getItemsByCategory(categoryId) {
   const cached = getCachedItems(categoryId);
   if (cached) {
@@ -215,6 +321,14 @@ export async function getItemsByCategory(categoryId) {
   return items;
 }
 
+export async function getAllItems() {
+  const docs = await fetchAllPages(ITEMS_COLLECTION, { depth: "0" });
+  return docs.map((doc) => ({
+    id: doc.id,
+    name: doc.name ?? String(doc.id),
+  }));
+}
+
 export async function getItem(itemId) {
   if (!itemId) throw new Error("Item ID is required.");
   const token = await getToken();
@@ -222,14 +336,82 @@ export async function getItem(itemId) {
   return payloadFetch(url, { headers: authHeaders(token) });
 }
 
-export async function updateItem(itemId, { name, description }) {
+export async function getFactors() {
+  try {
+    const docs = await fetchAllPages(FACTORS_COLLECTION, { depth: "0" });
+    return docs.map((doc) => ({
+      id: doc.id,
+      label: doc.name ?? doc.title ?? String(doc.id),
+    }));
+  } catch (err) {
+    logger.warn("Failed to fetch factors from Payload (collection may not exist):", err.message);
+    return [];
+  }
+}
+
+export async function getAdditionalCosts() {
+  try {
+    const docs = await fetchAllPages(ADDITIONAL_COSTS_COLLECTION, { depth: "0" });
+    return docs.map((doc) => ({
+      id: doc.id,
+      label: doc.title ?? doc.name ?? String(doc.id),
+    }));
+  } catch (err) {
+    logger.warn("Failed to fetch additional costs from Payload (collection may not exist):", err.message);
+    return [];
+  }
+}
+
+export async function getOrganizations() {
+  try {
+    const docs = await fetchAllPages(ORGANIZATIONS_COLLECTION, { depth: "0" });
+    return docs.map((doc) => ({
+      id: doc.id,
+      name: doc.name ?? doc.title ?? String(doc.id),
+    }));
+  } catch (err) {
+    logger.warn("Failed to fetch organizations from Payload (collection may not exist):", err.message);
+    return [];
+  }
+}
+
+export async function updateItem(itemId, body) {
   if (!itemId) throw new Error("Item ID is required.");
   const token = await getToken();
   const url = buildUrl(ITEMS_COLLECTION, itemId);
 
   const payload = {};
-  if (name != null) payload[ITEM_NAME_FIELD] = String(name).trim();
-  if (description != null) payload[ITEM_DESCRIPTION_FIELD] = String(description).trim();
+  if (body.name != null) payload[ITEM_NAME_FIELD] = String(body.name).trim();
+  if (body.description != null) payload[ITEM_DESCRIPTION_FIELD] = String(body.description).trim();
+  if (body.unit != null) payload[ITEM_UNIT_FIELD] = String(body.unit).trim();
+  if (body.materialCost != null) {
+    const num = Number(body.materialCost);
+    payload[ITEM_MATERIAL_COST_FIELD] = Number.isNaN(num) ? 0 : num;
+  }
+
+  if (body.laborHours != null) {
+    const n = Number(body.laborHours);
+    payload.laborHours = Number.isNaN(n) ? 0 : n;
+  }
+  if (body.multiplierOverride != null && body.multiplierOverride !== "") {
+    const n = Number(body.multiplierOverride);
+    payload.multiplierOverride = Number.isNaN(n) ? undefined : n;
+  }
+  if (typeof body.subItem === "boolean") payload.subItem = body.subItem;
+  if (typeof body.requiresInfo === "boolean") payload.requiresInfo = body.requiresInfo;
+  if (body.factors !== undefined) payload.factors = body.factors;
+  if (Array.isArray(body.additional_costs)) payload.additional_costs = body.additional_costs;
+
+  const reserved = new Set(["description", "laborHours", "multiplierOverride", "subItem", "requiresInfo", "factors", "additional_costs"]);
+  for (const [key, value] of Object.entries(body)) {
+    if (reserved.has(key) || payload[key] !== undefined) continue;
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      payload[key] = value;
+    } else if (Array.isArray(value)) {
+      payload[key] = value;
+    }
+  }
 
   const result = await payloadFetch(url, {
     method: "PATCH",
