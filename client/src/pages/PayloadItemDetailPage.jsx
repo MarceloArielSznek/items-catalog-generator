@@ -8,7 +8,7 @@ import ItemPreviewComposite from "../components/ItemPreviewComposite.jsx";
 import ModeSelector from "../components/ModeSelector.jsx";
 import FormatSelector from "../components/FormatSelector.jsx";
 import LogoPositionGrid from "../components/LogoPositionGrid.jsx";
-import { validateImageFile, createPreviewUrl, revokePreviewUrl } from "../utils/fileHelpers.js";
+import { validateImageFile, validateMediaFile, createPreviewUrl, revokePreviewUrl, isVideoFile } from "../utils/fileHelpers.js";
 import { COMPOSITION_DEFAULTS, LIGHTING_DEFAULTS } from "../../../shared/constants/imageRules.js";
 import config from "../config.js";
 
@@ -18,6 +18,11 @@ function resolveMediaUrl(url) {
   if (!url) return null;
   if (url.startsWith("http")) return url;
   return `${PAYLOAD_BASE}${url}`;
+}
+
+function isVideoFilename(filename) {
+  const ext = (filename || "").toLowerCase();
+  return ext.endsWith(".mp4") || ext.endsWith(".mov");
 }
 
 function extractMediaList(item) {
@@ -31,6 +36,7 @@ function extractMediaList(item) {
       url: resolveMediaUrl(m.url),
       thumbUrl: resolveMediaUrl(m.sizes?.thumbnail?.url || m.url),
       filename: m.filename || "",
+      isVideo: isVideoFilename(m.filename) || (m.mimeType || "").startsWith("video/"),
     }));
 }
 
@@ -173,6 +179,8 @@ export default function PayloadItemDetailPage() {
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const validationErr = validateMediaFile(file);
+    if (validationErr) { setError(validationErr); return; }
     setUploading(true);
     setError(null);
     try {
@@ -367,7 +375,9 @@ export default function PayloadItemDetailPage() {
     );
   }
 
-  const currentImage = mediaList[selectedMedia]?.url || null;
+  const currentMedia = mediaList[selectedMedia] || null;
+  const currentImage = currentMedia?.url || null;
+  const currentIsVideo = currentMedia?.isVideo || false;
   const categoryName = item?.category?.title || item?.category?.name || "";
   const svcCssFilter = buildCssFilter(svcLighting);
 
@@ -387,21 +397,35 @@ export default function PayloadItemDetailPage() {
         <div className="payload-detail__images">
           <div className="payload-detail__main-img-wrap">
             {currentImage ? (
-              <img className="payload-detail__main-img" src={currentImage} alt={name || "Item"} />
+              currentIsVideo ? (
+                <video className="payload-detail__main-img" src={currentImage} controls />
+              ) : (
+                <img className="payload-detail__main-img" src={currentImage} alt={name || "Item"} />
+              )
             ) : (
-              <div className="payload-detail__no-image">No images available</div>
+              <div className="payload-detail__no-image">No media available</div>
             )}
           </div>
           {mediaList.length > 0 && (
             <div className="payload-detail__thumbs">
               {mediaList.map((m, idx) => (
                 <div key={m.id} className="payload-detail__thumb-wrap">
-                  <img
-                    src={m.thumbUrl}
-                    alt={m.filename}
-                    className={`payload-detail__thumb ${idx === selectedMedia ? "payload-detail__thumb--active" : ""}`}
-                    onClick={() => setSelectedMedia(idx)}
-                  />
+                  {m.isVideo ? (
+                    <div
+                      className={`payload-detail__thumb payload-detail__thumb--video ${idx === selectedMedia ? "payload-detail__thumb--active" : ""}`}
+                      onClick={() => setSelectedMedia(idx)}
+                      title={m.filename}
+                    >
+                      <span className="payload-detail__thumb-video-icon">&#9654;</span>
+                    </div>
+                  ) : (
+                    <img
+                      src={m.thumbUrl}
+                      alt={m.filename}
+                      className={`payload-detail__thumb ${idx === selectedMedia ? "payload-detail__thumb--active" : ""}`}
+                      onClick={() => setSelectedMedia(idx)}
+                    />
+                  )}
                   <button
                     className="payload-detail__thumb-remove"
                     title="Remove from item"
@@ -453,9 +477,9 @@ export default function PayloadItemDetailPage() {
               {saving ? "Saving..." : "Save to Payload"}
             </button>
             <button className="btn btn--secondary" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-              {uploading ? "Uploading..." : "Upload Image"}
+              {uploading ? "Uploading..." : "Upload Media"}
             </button>
-            <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleUpload} />
+            <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime" style={{ display: "none" }} onChange={handleUpload} />
             {savedMsg && <span className="payload-detail__saved-msg">{savedMsg}</span>}
           </div>
 

@@ -2846,6 +2846,19 @@ body {
   transition: border-color 0.15s;
 }
 
+.payload-detail__thumb--video {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1e293b;
+  color: #fff;
+}
+
+.payload-detail__thumb-video-icon {
+  font-size: 1.4rem;
+  opacity: 0.85;
+}
+
 .payload-detail__thumb--active {
   border-color: #2563eb;
 }

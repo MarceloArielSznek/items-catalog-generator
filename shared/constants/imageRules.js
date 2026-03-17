@@ -6,6 +6,22 @@ export const ALLOWED_MIME_TYPES = [
 
 export const ALLOWED_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
 
+export const ALLOWED_VIDEO_MIME_TYPES = ["video/mp4", "video/quicktime"];
+export const ALLOWED_VIDEO_EXTENSIONS = [".mp4", ".mov"];
+
+export const ALLOWED_MEDIA_MIME_TYPES = [
+  ...ALLOWED_MIME_TYPES,
+  ...ALLOWED_VIDEO_MIME_TYPES,
+];
+
+export const ALLOWED_MEDIA_EXTENSIONS = [
+  ...ALLOWED_EXTENSIONS,
+  ...ALLOWED_VIDEO_EXTENSIONS,
+];
+
+export const MAX_VIDEO_SIZE_MB = 200;
+export const SMART_STORAGE_THRESHOLD_MB = 25;
+
 export const UPLOAD_FIELDS = {
   BACKGROUND: "background",
   ITEM: "item",

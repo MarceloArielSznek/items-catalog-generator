@@ -1,5 +1,5 @@
 import { useRef, useCallback } from "react";
-import { validateImageFile, createPreviewUrl, revokePreviewUrl } from "../utils/fileHelpers.js";
+import { validateMediaFile, createPreviewUrl, revokePreviewUrl, isVideoFile } from "../utils/fileHelpers.js";
 
 export default function BulkUploadZone({ items, onChange, disabled }) {
   const inputRef = useRef(null);
@@ -7,9 +7,9 @@ export default function BulkUploadZone({ items, onChange, disabled }) {
   const addFiles = useCallback((fileList) => {
     const newItems = [];
     for (const file of fileList) {
-      const err = validateImageFile(file);
+      const err = validateMediaFile(file);
       if (err) continue;
-      newItems.push({ id: `${Date.now()}-${Math.random()}`, file, preview: createPreviewUrl(file), name: "" });
+      newItems.push({ id: `${Date.now()}-${Math.random()}`, file, preview: createPreviewUrl(file), name: "", video: isVideoFile(file) });
     }
     if (newItems.length > 0) onChange((prev) => [...prev, ...newItems]);
   }, [onChange]);
@@ -48,16 +48,20 @@ export default function BulkUploadZone({ items, onChange, disabled }) {
         tabIndex={0}
       >
         <span className="bulk-zone__icon">📦</span>
-        <p className="bulk-zone__text">Drop item images here or click to browse</p>
-        <p className="bulk-zone__hint">JPG, PNG, WebP — multiple files supported</p>
-        <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={handleChange} style={{ display: "none" }} />
+        <p className="bulk-zone__text">Drop files here or click to browse</p>
+        <p className="bulk-zone__hint">JPG, PNG, WebP, MP4 — multiple files supported</p>
+        <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime" multiple onChange={handleChange} style={{ display: "none" }} />
       </div>
 
       {items.length > 0 && (
         <div className="bulk-zone__list">
           {items.map((item) => (
             <div key={item.id} className="bulk-item">
-              <img className="bulk-item__img" src={item.preview} alt={item.file.name} />
+              {item.video ? (
+                <video className="bulk-item__img" src={item.preview} muted />
+              ) : (
+                <img className="bulk-item__img" src={item.preview} alt={item.file.name} />
+              )}
               <div className="bulk-item__info">
                 <span className="bulk-item__filename">{item.file.name}</span>
                 <input

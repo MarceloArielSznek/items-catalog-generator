@@ -12,6 +12,7 @@ const env = {
   PORT: parseInt(process.env.PORT, 10) || 3001,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || "",
   MAX_FILE_SIZE_MB: parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 10,
+  MAX_MEDIA_SIZE_MB: parseInt(process.env.MAX_MEDIA_SIZE_MB, 10) || 200,
   UPLOAD_DIR: path.resolve(SERVER_ROOT, process.env.UPLOAD_DIR || "src/uploads"),
   GENERATED_DIR: path.resolve(SERVER_ROOT, process.env.GENERATED_DIR || "src/generated"),
   SCENES_DIR: path.resolve(SERVER_ROOT, process.env.SCENES_DIR || "src/scenes"),
@@ -24,5 +25,6 @@ const env = {
 };
 
 env.MAX_FILE_SIZE_BYTES = env.MAX_FILE_SIZE_MB * 1024 * 1024;
+env.MAX_MEDIA_SIZE_BYTES = env.MAX_MEDIA_SIZE_MB * 1024 * 1024;
 
 export default env;

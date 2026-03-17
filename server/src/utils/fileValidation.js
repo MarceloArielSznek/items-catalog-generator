@@ -1,14 +1,28 @@
 import path from "path";
-import { ALLOWED_MIME_TYPES, ALLOWED_EXTENSIONS } from "../../../shared/constants/imageRules.js";
+import {
+  ALLOWED_MIME_TYPES,
+  ALLOWED_EXTENSIONS,
+  ALLOWED_MEDIA_MIME_TYPES,
+  ALLOWED_MEDIA_EXTENSIONS,
+} from "../../../shared/constants/imageRules.js";
 import env from "../config/env.js";
 
 export function isAllowedMimeType(mimetype) {
   return ALLOWED_MIME_TYPES.includes(mimetype);
 }
 
+export function isAllowedMediaMimeType(mimetype) {
+  return ALLOWED_MEDIA_MIME_TYPES.includes(mimetype);
+}
+
 export function isAllowedExtension(filename) {
   const ext = path.extname(filename).toLowerCase();
   return ALLOWED_EXTENSIONS.includes(ext);
+}
+
+export function isAllowedMediaExtension(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  return ALLOWED_MEDIA_EXTENSIONS.includes(ext);
 }
 
 export function isWithinSizeLimit(sizeBytes) {

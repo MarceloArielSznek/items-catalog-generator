@@ -1,5 +1,9 @@
 import { Router } from "express";
+import fs from "fs/promises";
 import multer from "multer";
+import env from "../config/env.js";
+import SmartStorage from "../middleware/smartStorage.js";
+import { isAllowedMediaMimeType } from "../utils/fileValidation.js";
 import {
   getWorkAreas,
   getCategoriesByWorkArea,
@@ -11,9 +15,20 @@ import {
   attachMediaToItem,
   detachMediaFromItem,
 } from "../services/payloadService.js";
+import { SMART_STORAGE_THRESHOLD_MB } from "../../../shared/constants/imageRules.js";
 
 const router = Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+const mediaUpload = multer({
+  storage: new SmartStorage({
+    threshold: SMART_STORAGE_THRESHOLD_MB * 1024 * 1024,
+    destination: env.UPLOAD_DIR,
+  }),
+  fileFilter: (_req, file, cb) => {
+    cb(null, isAllowedMediaMimeType(file.mimetype));
+  },
+  limits: { fileSize: env.MAX_MEDIA_SIZE_BYTES },
+});
 
 router.get("/work-areas", async (_req, res, next) => {
   try {
@@ -70,12 +85,19 @@ router.patch("/items/:id", async (req, res, next) => {
   }
 });
 
-router.post("/items/:id/media", upload.single("file"), async (req, res, next) => {
+router.post("/items/:id/media", mediaUpload.single("file"), async (req, res, next) => {
   try {
     const file = req.file;
     if (!file) return res.status(400).json({ success: false, error: "File is required" });
 
-    const mediaDoc = await uploadMedia(file.buffer, file.originalname, file.mimetype);
+    let buffer;
+    try {
+      buffer = file.buffer ?? await fs.readFile(file.path);
+    } finally {
+      if (file.path) await fs.unlink(file.path).catch(() => {});
+    }
+
+    const mediaDoc = await uploadMedia(buffer, file.originalname, file.mimetype);
     const mediaId = mediaDoc?.id;
     if (!mediaId) {
       return res.status(500).json({ success: false, error: "Upload succeeded but media ID was not returned" });
