@@ -1,4 +1,5 @@
 import config from "../config.js";
+import { getAuthHeader } from "./payloadAuth.js";
 
 const BASE = `${config.API_BASE_URL}/payload`;
 const CACHE_TTL_MS = 2 * 60 * 1000; // 5 min
@@ -9,7 +10,12 @@ const categoriesCache = { data: null, expires: 0 };
 const itemsCache = new Map(); // categoryId -> { data, expires }
 
 async function request(url, options = {}) {
-  const res = await fetch(url, options);
+  const { headers: optHeaders, ...rest } = options;
+  const headers = { ...getAuthHeader(), ...optHeaders };
+  if (rest.body instanceof FormData) {
+    delete headers["Content-Type"];
+  }
+  const res = await fetch(url, { ...rest, headers });
   const body = await res.json();
   if (!res.ok) {
     throw new Error(body.error || body.message || `Server error (${res.status})`);

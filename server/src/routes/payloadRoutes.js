@@ -5,6 +5,7 @@ import env from "../config/env.js";
 import SmartStorage from "../middleware/smartStorage.js";
 import { isAllowedMediaMimeType } from "../utils/fileValidation.js";
 import {
+  loginWithCredentials,
   getWorkAreas,
   getWorkArea,
   createWorkArea,
@@ -27,9 +28,32 @@ import {
   getAdditionalCosts,
   getOrganizations,
 } from "../services/payloadService.js";
+import { payloadRequestContextMiddleware } from "../middleware/payloadRequestContext.js";
 import { SMART_STORAGE_THRESHOLD_MB } from "../../../shared/constants/imageRules.js";
 
 const router = Router();
+
+/** Same as form-builder: client posts Payload credentials, receives JWT for sessionStorage. */
+router.post("/auth/login", async (req, res, next) => {
+  try {
+    const email = req.body?.email;
+    const password = req.body?.password;
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: "Email and password are required" });
+    }
+    const data = await loginWithCredentials(email, password);
+    res.json({
+      success: true,
+      token: data.token,
+      exp: data.exp,
+      user: data.user,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.use(payloadRequestContextMiddleware);
 
 const mediaUpload = multer({
   storage: new SmartStorage({

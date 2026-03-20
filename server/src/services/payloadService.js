@@ -1,5 +1,7 @@
 import env from "../config/env.js";
 import logger from "../utils/logger.js";
+import { HttpError } from "../utils/httpError.js";
+import { getPayloadRequestContext, isUserBearerToken } from "../middleware/payloadRequestContext.js";
 
 const API_PREFIX = "/api";
 const AUTH_COLLECTION = "users";
@@ -78,13 +80,19 @@ function buildUrl(...segments) {
   return parts.join("/");
 }
 
-function validateConfig() {
+function validatePayloadUrl() {
+  if (!env.PAYLOAD_API_URL) {
+    throw new Error("Missing Payload env var: API_BASE_URL");
+  }
+}
+
+function validateEnvCredentials() {
   const missing = [];
   if (!env.PAYLOAD_API_URL) missing.push("API_BASE_URL");
   if (!env.PAYLOAD_USER) missing.push("API_USER");
   if (!env.PAYLOAD_PASSWORD) missing.push("API_PASSWORD");
   if (missing.length > 0) {
-    throw new Error(`Missing Payload env vars: ${missing.join(", ")}`);
+    throw new Error(`Missing Payload env vars (dev server login): ${missing.join(", ")}`);
   }
 }
 
@@ -106,13 +114,42 @@ async function payloadFetch(url, options = {}) {
   }
 }
 
+/**
+ * Public login (email/password) for the catalog client — no Bearer required.
+ */
+export async function loginWithCredentials(email, password) {
+  validatePayloadUrl();
+  if (!email || !password) {
+    throw new Error("Email and password are required.");
+  }
+  const url = buildUrl(AUTH_COLLECTION, "login");
+  const body = await payloadFetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      [LOGIN_FIELD]: String(email).trim(),
+      password: String(password),
+    }),
+  });
+  return body;
+}
+
 export async function getToken() {
+  const { userToken } = getPayloadRequestContext();
+  if (userToken) {
+    return userToken;
+  }
+
+  if (env.IS_PRODUCTION) {
+    throw new HttpError(401, "Payload authentication required.");
+  }
+
   const now = Date.now();
   if (cachedToken && now - tokenIssuedAt < TOKEN_TTL_MS) {
     return cachedToken;
   }
 
-  validateConfig();
+  validateEnvCredentials();
   const url = buildUrl(AUTH_COLLECTION, "login");
   const body = await payloadFetch(url, {
     method: "POST",
@@ -128,7 +165,7 @@ export async function getToken() {
 
   cachedToken = token;
   tokenIssuedAt = now;
-  logger.info("Payload auth token acquired");
+  logger.info("Payload auth token acquired (server .env login)");
   return token;
 }
 
@@ -164,15 +201,18 @@ async function fetchAllPages(collection, params = {}) {
 }
 
 export async function getWorkAreas() {
-  if (workAreasCache.data !== null && Date.now() < workAreasCache.expires) {
+  const useCache = !isUserBearerToken();
+  if (useCache && workAreasCache.data !== null && Date.now() < workAreasCache.expires) {
     logger.info(`Work areas from cache (${workAreasCache.data.length} items)`);
     return workAreasCache.data;
   }
   const docs = await fetchAllPages(WORK_AREAS_COLLECTION, { depth: "0" });
   const workAreas = docs.map((doc) => ({ ...doc, id: doc.id, name: doc.name }));
   logger.info(`Fetched ${workAreas.length} work areas from Payload`);
-  workAreasCache.data = workAreas;
-  workAreasCache.expires = Date.now() + CACHE_TTL_MS;
+  if (useCache) {
+    workAreasCache.data = workAreas;
+    workAreasCache.expires = Date.now() + CACHE_TTL_MS;
+  }
   return workAreas;
 }
 
@@ -221,7 +261,8 @@ export async function deleteWorkArea(id) {
 
 export async function getCategoriesByWorkArea(workAreaId) {
   if (!workAreaId) throw new Error("Work area ID is required.");
-  const entry = categoriesByWorkAreaCache.get(String(workAreaId));
+  const useCache = !isUserBearerToken();
+  const entry = useCache ? categoriesByWorkAreaCache.get(String(workAreaId)) : null;
   if (entry && Date.now() < entry.expires) {
     logger.info(`Categories for work area ${workAreaId} from cache (${entry.data.length} items)`);
     return entry.data;
@@ -236,22 +277,25 @@ export async function getCategoriesByWorkArea(workAreaId) {
     .filter(Boolean);
 
   logger.info(`Fetched ${categories.length} categories for work area ${workAreaId}`);
-  categoriesByWorkAreaCache.set(String(workAreaId), {
-    data: categories,
-    expires: Date.now() + CACHE_TTL_MS,
-  });
+  if (useCache) {
+    categoriesByWorkAreaCache.set(String(workAreaId), {
+      data: categories,
+      expires: Date.now() + CACHE_TTL_MS,
+    });
+  }
   return categories;
 }
 
 export async function getCategories() {
-  const cached = getCachedCategories();
+  const useCache = !isUserBearerToken();
+  const cached = useCache ? getCachedCategories() : null;
   if (cached) {
     logger.info(`Categories from cache (${cached.length} items)`);
     return cached;
   }
   const categories = await fetchAllPages(CATEGORIES_COLLECTION);
   logger.info(`Fetched ${categories.length} categories from Payload`);
-  setCachedCategories(categories);
+  if (useCache) setCachedCategories(categories);
   return categories;
 }
 
@@ -302,7 +346,8 @@ export async function deleteCategory(id) {
 }
 
 export async function getItemsByCategory(categoryId) {
-  const cached = getCachedItems(categoryId);
+  const useCache = !isUserBearerToken();
+  const cached = useCache ? getCachedItems(categoryId) : null;
   if (cached) {
     logger.info(`Items for category ${categoryId} from cache (${cached.length} items)`);
     return cached;
@@ -317,7 +362,7 @@ export async function getItemsByCategory(categoryId) {
     .filter(Boolean);
 
   logger.info(`Fetched ${items.length} items for category ${categoryId}`);
-  setCachedItems(categoryId, items);
+  if (useCache) setCachedItems(categoryId, items);
   return items;
 }
 
