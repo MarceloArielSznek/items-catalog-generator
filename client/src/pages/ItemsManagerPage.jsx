@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { uploadOrgLogo, orgLogoUrl } from "../services/enrichApi.js";
+import { uploadOrgLogo, orgLogoUrl, autoEnrichBatch } from "../services/enrichApi.js";
 import EnrichWizard from "../components/EnrichWizard.jsx";
 import LogoLibrary from "../components/LogoLibrary.jsx";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
@@ -45,6 +45,9 @@ export default function ItemsManagerPage() {
   const [showLogoLibrary, setShowLogoLibrary] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState(new Set());
   const [showWizard, setShowWizard] = useState(false);
+  const [autoEnriching, setAutoEnriching] = useState(false);
+  const [autoEnrichProgress, setAutoEnrichProgress] = useState(0);
+  const [autoEnrichLogs, setAutoEnrichLogs] = useState([]);
 
   const [workAreas, setWorkAreas] = useState([]);
   const [selectedWA, setSelectedWA] = useState(null);
@@ -199,6 +202,38 @@ export default function ItemsManagerPage() {
   const closeItemModal = useCallback(() => {
     navigate("/items", { state: { workAreaId: selectedWA?.id, categoryId: selectedCat?.id } });
   }, [navigate, selectedWA?.id, selectedCat?.id]);
+
+  const handleAutoEnrich = useCallback(async () => {
+    if (selectedItemIds.size === 0) return;
+
+    setAutoEnriching(true);
+    setAutoEnrichProgress(0);
+    setAutoEnrichLogs([]);
+
+    try {
+      const itemIds = Array.from(selectedItemIds);
+      await autoEnrichBatch(itemIds, selectedOrg?.id, selectedOrg?.name, {
+        onProgress: (data) => {
+          const percent = Math.round((data.current / data.total) * 100);
+          setAutoEnrichProgress(percent);
+        },
+        onLog: (message) => {
+          setAutoEnrichLogs((prev) => [...prev, message]);
+        },
+      });
+
+      // Success! Reload items
+      if (selectedCat?.id) {
+        loadItems(selectedCat.id);
+      }
+
+      setSelectedItemIds(new Set());
+    } catch (err) {
+      setAutoEnrichLogs((prev) => [...prev, `❌ Error: ${err.message}`]);
+    } finally {
+      setAutoEnriching(false);
+    }
+  }, [selectedItemIds, selectedOrg, selectedCat, loadItems]);
 
   useEffect(() => {
     if (!itemId) return;
@@ -513,9 +548,22 @@ export default function ItemsManagerPage() {
                     </span>
                   )}
                   {selectedItemIds.size > 0 && (
-                    <button className="items-enrich-btn" onClick={() => setShowWizard(true)}>
-                      ✨ Enrich {selectedItemIds.size} item{selectedItemIds.size !== 1 ? "s" : ""}
-                    </button>
+                    <div className="items-enrich-group">
+                      <button
+                        className="items-enrich-btn items-enrich-btn--auto"
+                        onClick={handleAutoEnrich}
+                        disabled={autoEnriching}
+                      >
+                        {autoEnriching ? `⏳ ${autoEnrichProgress}%` : "🚀 Auto-Enrich"}
+                      </button>
+                      <button
+                        className="items-enrich-btn"
+                        onClick={() => setShowWizard(true)}
+                        disabled={autoEnriching}
+                      >
+                        ✨ Enrich {selectedItemIds.size} item{selectedItemIds.size !== 1 ? "s" : ""}
+                      </button>
+                    </div>
                   )}
                   <select
                     className="items-sort"
@@ -533,6 +581,25 @@ export default function ItemsManagerPage() {
 
               {/* Grid */}
               <div className="items-content__grid-area">
+                {pagedItems.length > 0 && (
+                  <div className="items-grid-header">
+                    <label className="items-select-all">
+                      <input
+                        type="checkbox"
+                        checked={pagedItems.length > 0 && pagedItems.every(item => selectedItemIds.has(item.id))}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            const allIds = new Set(pagedItems.map(item => item.id));
+                            setSelectedItemIds(allIds);
+                          } else {
+                            setSelectedItemIds(new Set());
+                          }
+                        }}
+                      />
+                      Select all on page ({pagedItems.length})
+                    </label>
+                  </div>
+                )}
                 {loadingItems ? (
                   <div className="items-grid-skeleton">
                     {[1,2,3,4,5,6].map(i => <div key={i} className="items-card-skeleton" />)}
@@ -643,6 +710,26 @@ export default function ItemsManagerPage() {
           onClose={() => { setShowWizard(false); setSelectedItemIds(new Set()); }}
           onFinished={() => { setShowWizard(false); setSelectedItemIds(new Set()); loadItems(selectedCat?.id); }}
         />
+      )}
+
+      {autoEnriching && (
+        <div className="auto-enrich-modal-overlay">
+          <div className="auto-enrich-modal">
+            <h2>🚀 Auto-Enriching {selectedItemIds.size} items...</h2>
+            <div className="auto-enrich-progress-bar">
+              <div className="auto-enrich-progress-fill" style={{ width: `${autoEnrichProgress}%` }}></div>
+            </div>
+            <p className="auto-enrich-progress-text">{autoEnrichProgress}%</p>
+
+            <div className="auto-enrich-logs">
+              {autoEnrichLogs.map((log, i) => (
+                <p key={i} className="auto-enrich-log-line">
+                  {log}
+                </p>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
 
       {itemId && (

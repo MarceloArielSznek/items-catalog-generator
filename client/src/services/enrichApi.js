@@ -87,6 +87,57 @@ export async function generateEnrichImage(itemId, { itemName, categoryName, desc
   return body.data;
 }
 
+// ── Auto-enrich batch (SSE streaming) ─────────────────────────────────────────
+
+/**
+ * Auto-enriches multiple items with intelligent defaults.
+ * Calls onProgress and onLog for each event.
+ * Returns results array.
+ */
+export function autoEnrichBatch(itemIds, orgId, orgName, { onProgress = () => {}, onLog = () => {}, signal } = {}) {
+  return new Promise((resolve, reject) => {
+    fetch(`${BASE}/items/batch/auto`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ itemIds, orgId, orgName }),
+      signal,
+    }).then(async (res) => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return reject(new Error(body.error || `Server error ${res.status}`));
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let results = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop(); // keep incomplete line
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.type === "progress") onProgress(data);
+            else if (data.type === "log") onLog(data.message);
+            else if (data.type === "done") {
+              results = data.results || [];
+              resolve(data);
+            }
+            else if (data.type === "error") reject(new Error(data.message));
+          } catch { /* skip malformed */ }
+        }
+      }
+    }).catch(reject);
+  });
+}
+
 // ── Enrich item (SSE streaming) ───────────────────────────────────────────────
 
 /**

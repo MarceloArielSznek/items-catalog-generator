@@ -184,6 +184,75 @@ router.post("/items/:itemId/apply", async (req, res, next) => {
   }
 });
 
+// ── POST /api/enrich/items/batch/auto — auto-enrich multiple items ──────────
+router.post("/items/batch/auto", async (req, res) => {
+  const { itemIds, orgId, orgName, industryContext } = req.body;
+
+  if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0) {
+    return res.status(400).json({ success: false, error: "itemIds array required" });
+  }
+
+  res.set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.flushHeaders();
+
+  const send = (data) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    if (res.flush) res.flush();
+  };
+
+  try {
+    const resolvedIndustry = industryContext || (orgName
+      ? orgName.toLowerCase().replace(/\s*(pros?|experts?|services?|solutions?)\s*/gi, "").trim()
+      : "");
+
+    const results = [];
+    for (let i = 0; i < itemIds.length; i++) {
+      const itemId = itemIds[i];
+      try {
+        send({ type: "progress", current: i, total: itemIds.length, itemId, status: "processing" });
+
+        // Get candidates with smart suggestions
+        const candidates = await getEnrichCandidates(itemId, orgId || null, resolvedIndustry);
+
+        // Get the best image automatically
+        const bestImage = candidates.data.images[0];
+        if (!bestImage) {
+          send({ type: "log", message: `⚠️ No images found for item ${itemId}` });
+          continue;
+        }
+
+        // Apply enrichment automatically with smart defaults
+        await applyEnrich(itemId, orgId || null, {
+          imageUrl: bestImage.url,
+          description: candidates.data.description,
+          lighting: { brightness: 1, contrast: 1, saturation: 1, warmth: 0 },
+          logoPosition: null, // auto-detect on server
+          logoScale: 0.25,
+          logoVariant: null, // auto-select on server
+        });
+
+        send({ type: "log", message: `✅ Enriched: ${itemId}` });
+        results.push({ itemId, status: "success" });
+      } catch (err) {
+        send({ type: "log", message: `❌ Failed: ${itemId} - ${err.message}` });
+        results.push({ itemId, status: "failed", error: err.message });
+      }
+    }
+
+    send({ type: "done", message: "Auto-enrich completed!", results });
+  } catch (err) {
+    logger.error("Auto-enrich failed:", err.message);
+    send({ type: "error", message: err.message });
+  } finally {
+    res.end();
+  }
+});
+
 // ── GET /api/enrich/proxy?url=... — CORS proxy for image previews ─────────────
 router.get("/proxy", async (req, res, next) => {
   try {
