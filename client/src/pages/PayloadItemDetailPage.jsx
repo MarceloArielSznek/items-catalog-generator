@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { fetchItem, updatePayloadItem, uploadItemMedia, detachItemMedia, invalidatePayloadCache, fetchFactors, fetchAdditionalCosts } from "../services/payloadApi.js";
+import { enrichItem } from "../services/enrichApi.js";
 import { listScenes, generateWithScene, removeBackground, processServiceImage } from "../services/api.js";
 import RichTextEditor from "../components/RichTextEditor.jsx";
 import { htmlToMarkdown, markdownToHtml, looksLikeHtml } from "../utils/markdownPayload.js";
@@ -12,7 +13,7 @@ import { validateImageFile, validateMediaFile, createPreviewUrl, revokePreviewUr
 import { COMPOSITION_DEFAULTS, LIGHTING_DEFAULTS } from "../../../shared/constants/imageRules.js";
 import config from "../config.js";
 
-const PAYLOAD_BASE = "https://www.attic-tech.com";
+const PAYLOAD_BASE = "https://pr-819.preview.menaia.com";
 
 const UNIT_OPTIONS = [
   "",
@@ -73,7 +74,7 @@ function buildCssFilter(lighting) {
   return f;
 }
 
-export default function PayloadItemDetailPage({ isModal = false }) {
+export default function PayloadItemDetailPage({ isModal = false, orgId = null, orgName = "" }) {
   const { itemId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -100,6 +101,10 @@ export default function PayloadItemDetailPage({ isModal = false }) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
+
+  // ── Auto-enrich state ──
+  const [enriching, setEnriching] = useState(false);
+  const [enrichStep, setEnrichStep] = useState("");
 
   const [mediaList, setMediaList] = useState([]);
   const [selectedMedia, setSelectedMedia] = useState(0);
@@ -280,6 +285,26 @@ export default function PayloadItemDetailPage({ isModal = false }) {
       showSaved("Saved successfully");
     } catch (err) { setError(err.message); }
     finally { setSaving(false); }
+  };
+
+  const handleEnrich = async () => {
+    if (enriching) return;
+    setEnriching(true);
+    setEnrichStep("Starting…");
+    setError(null);
+    try {
+      await enrichItem(itemId, orgId, orgName, {
+        onProgress: ({ message }) => setEnrichStep(message),
+      });
+      setEnrichStep("Reloading…");
+      await loadItem();
+      showSaved("Auto-enriched successfully!");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setEnriching(false);
+      setEnrichStep("");
+    }
   };
 
   const setExtraField = useCallback((key, value) => {
@@ -499,10 +524,226 @@ export default function PayloadItemDetailPage({ isModal = false }) {
   const categoryName = item?.category?.title || item?.category?.name || "";
   const svcCssFilter = buildCssFilter(svcLighting);
 
+  // ── Shared form sections (used in both modal and page) ──
+  const formSections = (
+    <div className="idf">
+
+      {/* Description */}
+      <div className="idf__section">
+        <label className="idf__label">Description</label>
+        <RichTextEditor content={description} onChange={(html) => { setDescription(html); setDirty(true); }} />
+      </div>
+
+      {/* Pricing grid */}
+      <div className="idf__section">
+        <p className="idf__section-title">Pricing</p>
+        <div className="idf__grid2">
+          <div>
+            <label className="idf__label">Material Cost</label>
+            <div className="idf__input-wrap idf__input-wrap--prefix">
+              <span className="idf__prefix">$</span>
+              <input className="idf__input" type="number" step="any" min="0" value={materialCost} placeholder="0.00"
+                onChange={(e) => { setMaterialCost(e.target.value); setDirty(true); }} />
+            </div>
+          </div>
+          <div>
+            <label className="idf__label">Labor Hours</label>
+            <input className="idf__input" type="number" step="any" min="0" value={laborHours} placeholder="0"
+              onChange={(e) => { setLaborHours(e.target.value); setDirty(true); }} />
+          </div>
+          <div>
+            <label className="idf__label">Unit</label>
+            <select className="idf__input idf__select" value={unit}
+              onChange={(e) => { setUnit(e.target.value); setDirty(true); }}>
+              {UNIT_OPTIONS.map((opt) => (
+                <option key={opt || "__empty__"} value={opt}>{opt || "— Select —"}</option>
+              ))}
+              {unit && !UNIT_OPTIONS.includes(unit) && <option value={unit}>{unit}</option>}
+            </select>
+          </div>
+          <div>
+            <label className="idf__label">Multiplier Override</label>
+            <input className="idf__input" type="number" step="any" value={multiplierOverride} placeholder="—"
+              onChange={(e) => { setMultiplierOverride(e.target.value); setDirty(true); }} />
+          </div>
+        </div>
+      </div>
+
+      {/* Flags */}
+      <div className="idf__section">
+        <p className="idf__section-title">Flags</p>
+        <div className="idf__toggles">
+          <label className="idf__toggle">
+            <span className="idf__toggle-track">
+              <input type="checkbox" checked={subItem} onChange={(e) => { setSubItem(e.target.checked); setDirty(true); }} />
+              <span className="idf__toggle-thumb" />
+            </span>
+            <span className="idf__toggle-label">Sub Item</span>
+          </label>
+          <label className="idf__toggle">
+            <span className="idf__toggle-track">
+              <input type="checkbox" checked={requiresInfo} onChange={(e) => { setRequiresInfo(e.target.checked); setDirty(true); }} />
+              <span className="idf__toggle-thumb" />
+            </span>
+            <span className="idf__toggle-label">Requires Info</span>
+          </label>
+        </div>
+      </div>
+
+      {/* Factors */}
+      {(factors.length > 0 || factorsOptions.length > 0) && (
+        <div className="idf__section">
+          <p className="idf__section-title">Factors</p>
+          <div className="idf__chips">
+            {factors.map((f) => (
+              <span key={f.id} className="idf__chip">
+                {f.label}
+                <button type="button" className="idf__chip-remove"
+                  onClick={() => { setFactors((prev) => prev.filter((x) => x.id !== f.id)); setDirty(true); }}>×</button>
+              </span>
+            ))}
+          </div>
+          {factorsOptions.length > 0 && (
+            <select className="idf__input idf__select idf__select--add" value=""
+              onChange={(e) => {
+                const id = e.target.value === "" ? null : Number(e.target.value);
+                e.target.value = "";
+                if (id != null && !factors.some((c) => c.id === id)) {
+                  const opt = factorsOptions.find((a) => a.id === id);
+                  setFactors((prev) => [...prev, { id, label: opt ? opt.label : `ID: ${id}` }]);
+                  setDirty(true);
+                }
+              }}>
+              <option value="">+ Add factor…</option>
+              {factorsOptions.filter((a) => !factors.some((c) => c.id === a.id)).map((a) => (
+                <option key={a.id} value={a.id}>{a.label}</option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+
+      {/* Additional Costs */}
+      {(additionalCosts.length > 0 || additionalCostsOptions.length > 0) && (
+        <div className="idf__section">
+          <p className="idf__section-title">Additional Costs</p>
+          <div className="idf__chips">
+            {additionalCosts.map((c) => (
+              <span key={c.id} className="idf__chip idf__chip--cost">
+                {c.label}
+                <button type="button" className="idf__chip-remove"
+                  onClick={() => { setAdditionalCosts((prev) => prev.filter((x) => x.id !== c.id)); setDirty(true); }}>×</button>
+              </span>
+            ))}
+          </div>
+          {additionalCostsOptions.length > 0 && (
+            <select className="idf__input idf__select idf__select--add" value=""
+              onChange={(e) => {
+                const id = e.target.value === "" ? null : Number(e.target.value);
+                e.target.value = "";
+                if (id != null && !additionalCosts.some((c) => c.id === id)) {
+                  const opt = additionalCostsOptions.find((a) => a.id === id);
+                  setAdditionalCosts((prev) => [...prev, { id, label: opt ? opt.label : `ID: ${id}` }]);
+                  setDirty(true);
+                }
+              }}>
+              <option value="">+ Add cost…</option>
+              {additionalCostsOptions.filter((a) => !additionalCosts.some((c) => c.id === a.id)).map((a) => (
+                <option key={a.id} value={a.id}>{a.label}</option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+
+      {/* Extra fields */}
+      {Object.keys(extraFields).length > 0 && (
+        <div className="idf__section">
+          <p className="idf__section-title">Other Fields</p>
+          <div className="idf__grid2">
+            {Object.entries(extraFields).map(([key, value]) => (
+              <div key={key}>
+                <label className="idf__label">{fieldLabel(key)}</label>
+                {typeof value === "boolean" ? (
+                  <label className="idf__toggle">
+                    <span className="idf__toggle-track">
+                      <input type="checkbox" checked={!!extraFields[key]} onChange={(e) => setExtraField(key, e.target.checked)} />
+                      <span className="idf__toggle-thumb" />
+                    </span>
+                  </label>
+                ) : (
+                  <input className="idf__input"
+                    type={typeof value === "number" ? "number" : "text"}
+                    step={typeof value === "number" ? "any" : undefined}
+                    value={extraFields[key] ?? ""}
+                    onChange={(e) => setExtraField(key, typeof value === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Meta */}
+      {(item?.createdAt || item?.updatedAt) && (
+        <div className="idf__meta">
+          {item?.createdAt && <span>Created {new Date(item.createdAt).toLocaleDateString()}</span>}
+          {item?.updatedAt && <span>Updated {new Date(item.updatedAt).toLocaleDateString()}</span>}
+        </div>
+      )}
+    </div>
+  );
+
+  // ── Image panel (shared) ──
+  const imagePanel = (
+    <div className="idf__images">
+      <div className="idf__main-img">
+        {currentImage ? (
+          currentIsVideo
+            ? <video className="idf__main-img-el" src={currentImage} controls />
+            : <img className="idf__main-img-el" src={currentImage} alt={name || "Item"} />
+        ) : (
+          <div className="idf__no-img">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M13.5 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM6.75 21h10.5A2.25 2.25 0 0019.5 18.75V6.75A2.25 2.25 0 0017.25 4.5H6.75A2.25 2.25 0 004.5 6.75v12A2.25 2.25 0 006.75 21z" />
+            </svg>
+            <span>No image</span>
+          </div>
+        )}
+      </div>
+      {mediaList.length > 1 && (
+        <div className="idf__thumbs">
+          {mediaList.map((m, idx) => (
+            <div key={m.id} className="idf__thumb-wrap">
+              {m.isVideo ? (
+                <div className={`idf__thumb idf__thumb--video ${idx === selectedMedia ? "idf__thumb--active" : ""}`}
+                  onClick={() => setSelectedMedia(idx)}>▶</div>
+              ) : (
+                <img src={m.thumbUrl} alt={m.filename}
+                  className={`idf__thumb ${idx === selectedMedia ? "idf__thumb--active" : ""}`}
+                  onClick={() => setSelectedMedia(idx)} />
+              )}
+              <button className="idf__thumb-remove" disabled={detaching === m.id}
+                onClick={(e) => { e.stopPropagation(); handleDetachMedia(m.id); }}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <button className="idf__upload-btn" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+        <svg viewBox="0 0 20 20" fill="currentColor" width="15" height="15">
+          <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" />
+        </svg>
+        {uploading ? "Uploading…" : "Upload Image"}
+      </button>
+      <input ref={fileInputRef} type="file" accept="image/*,video/*" style={{ display: "none" }} onChange={handleUpload} />
+    </div>
+  );
+
   return (
     <main className="page">
       {!isModal && (
-        <button className="btn btn--link" onClick={() => navigate("/items", { state: { workAreaId: location.state?.fromWorkAreaId, categoryId: location.state?.fromCategoryId } })}>Back to Items</button>
+        <button className="btn btn--link" onClick={() => navigate("/items", { state: { workAreaId: location.state?.fromWorkAreaId, categoryId: location.state?.fromCategoryId } })}>← Back</button>
       )}
 
       {error && (
@@ -512,272 +753,63 @@ export default function PayloadItemDetailPage({ isModal = false }) {
         </div>
       )}
 
-      {/* ════════ ITEM INFO ════════ */}
-      <div className="payload-detail">
-        <div className="payload-detail__editor">
-          {categoryName && (
-            <div className="payload-detail__field">
-              <label className="payload-detail__label">Category</label>
-              <div className="payload-detail__readonly">{categoryName}</div>
+      {/* ════════ ITEM DETAIL ════════ */}
+      <div className={isModal ? "idf-modal-layout" : "idf-page-layout"}>
+        {/* Left: image */}
+        <div className="idf-modal-layout__image">
+          {/* Name + category in modal context */}
+          {isModal && (
+            <div className="idf__name-block">
+              {categoryName && <p className="idf__category">{categoryName}</p>}
+              <input
+                className="idf__name-input"
+                type="text"
+                value={name}
+                placeholder="Item name"
+                onChange={(e) => { setName(e.target.value); setDirty(true); }}
+              />
             </div>
           )}
+          {imagePanel}
+        </div>
 
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Item Name</label>
-            <input className="payload-detail__input" type="text" value={name} placeholder="Enter item name"
-              onChange={(e) => { setName(e.target.value); setDirty(true); }} />
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Description</label>
-            <RichTextEditor content={description} onChange={(html) => { setDescription(html); setDirty(true); }} />
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Unit</label>
-            <select
-              className="payload-detail__input"
-              value={unit}
-              onChange={(e) => { setUnit(e.target.value); setDirty(true); }}
-            >
-              {UNIT_OPTIONS.map((opt) => (
-                <option key={opt || "__empty__"} value={opt}>
-                  {opt || "— Select unit —"}
-                </option>
-              ))}
-              {unit && !UNIT_OPTIONS.includes(unit) && (
-                <option value={unit}>{unit}</option>
-              )}
-            </select>
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Material Cost</label>
-            <input className="payload-detail__input" type="number" step="any" min="0" value={materialCost} placeholder="0.00"
-              onChange={(e) => { setMaterialCost(e.target.value); setDirty(true); }} />
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Labor Hours</label>
-            <input className="payload-detail__input" type="number" step="any" min="0" value={laborHours} placeholder="0"
-              onChange={(e) => { setLaborHours(e.target.value); setDirty(true); }} />
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Multiplier Override</label>
-            <input className="payload-detail__input" type="number" step="any" value={multiplierOverride} placeholder="Optional"
-              onChange={(e) => { setMultiplierOverride(e.target.value); setDirty(true); }} />
-          </div>
-
-          <div className="payload-detail__field payload-detail__field--checkboxes">
-            <label className="payload-detail__checkbox-wrap">
-              <input type="checkbox" checked={subItem} onChange={(e) => { setSubItem(e.target.checked); setDirty(true); }} />
-              <span>Sub Item</span>
-            </label>
-            <label className="payload-detail__checkbox-wrap">
-              <input type="checkbox" checked={requiresInfo} onChange={(e) => { setRequiresInfo(e.target.checked); setDirty(true); }} />
-              <span>Requires Info</span>
-            </label>
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Factors</label>
-            <div className="payload-detail__chips">
-              {factors.map((f) => (
-                <span key={f.id} className="payload-detail__chip">
-                  {f.label}
-                  <button type="button" className="payload-detail__chip-remove" onClick={() => { setFactors((prev) => prev.filter((x) => x.id !== f.id)); setDirty(true); }} aria-label="Remove">×</button>
-                </span>
-              ))}
+        {/* Right: form */}
+        <div className="idf-modal-layout__form">
+          {!isModal && (
+            <div className="idf__name-block idf__name-block--page">
+              {categoryName && <p className="idf__category">{categoryName}</p>}
+              <input
+                className="idf__name-input"
+                type="text"
+                value={name}
+                placeholder="Item name"
+                onChange={(e) => { setName(e.target.value); setDirty(true); }}
+              />
             </div>
-            <div className="payload-detail__relation-row">
-              <select
-                className="payload-detail__input"
-                value=""
-                onChange={(e) => {
-                  const id = e.target.value === "" ? null : Number(e.target.value);
-                  e.target.value = "";
-                  if (id != null && !factors.some((c) => c.id === id)) {
-                    const opt = factorsOptions.find((a) => a.id === id);
-                    setFactors((prev) => [...prev, { id, label: opt ? opt.label : `ID: ${id}` }]);
-                    setDirty(true);
-                  }
-                }}
-              >
-                <option value="">Select to add...</option>
-                {factorsOptions
-                  .filter((a) => !factors.some((c) => c.id === a.id))
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>{a.label}</option>
-                  ))}
-              </select>
-            </div>
-          </div>
+          )}
+          {formSections}
+        </div>
+      </div>
 
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Additional costs</label>
-            <div className="payload-detail__chips">
-              {additionalCosts.map((c) => (
-                <span key={c.id} className="payload-detail__chip">
-                  {c.label}
-                  <button type="button" className="payload-detail__chip-remove" onClick={() => { setAdditionalCosts((prev) => prev.filter((x) => x.id !== c.id)); setDirty(true); }} aria-label="Remove">×</button>
-                </span>
-              ))}
-            </div>
-            <div className="payload-detail__relation-row">
-              <select
-                className="payload-detail__input"
-                value=""
-                onChange={(e) => {
-                  const id = e.target.value === "" ? null : Number(e.target.value);
-                  e.target.value = "";
-                  if (id != null && !additionalCosts.some((c) => c.id === id)) {
-                    const opt = additionalCostsOptions.find((a) => a.id === id);
-                    setAdditionalCosts((prev) => [...prev, { id, label: opt ? opt.label : `ID: ${id}` }]);
-                    setDirty(true);
-                  }
-                }}
-              >
-                <option value="">Select to add...</option>
-                {additionalCostsOptions
-                  .filter((a) => !additionalCosts.some((c) => c.id === a.id))
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>{a.label}</option>
-                  ))}
-              </select>
-              {additionalCostsOptions.length === 0 && (
-                <span className="payload-detail__hint">Load additional costs from Payload or add by ID below</span>
-              )}
-            </div>
-            {additionalCostsOptions.length === 0 && (
-              <div className="payload-detail__relation-row" style={{ marginTop: 8 }}>
-                <input
-                  className="payload-detail__input"
-                  type="number"
-                  placeholder="Add by ID"
-                  value={additionalCostIdToAdd}
-                  onChange={(e) => setAdditionalCostIdToAdd(e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="btn btn--secondary btn--sm"
-                  onClick={() => {
-                    const id = additionalCostIdToAdd === "" ? null : Number(additionalCostIdToAdd);
-                    if (id != null && !Number.isNaN(id) && !additionalCosts.some((c) => c.id === id)) {
-                      setAdditionalCosts((prev) => [...prev, { id, label: `ID: ${id}` }]);
-                      setAdditionalCostIdToAdd("");
-                      setDirty(true);
-                    }
-                  }}
-                >
-                  +
-                </button>
-              </div>
-            )}
-          </div>
+      {/* ════════ SAVE BAR ════════ */}
+      <div className="idf__save-bar">
+        <button className="idf__save-btn" onClick={handleSave} disabled={!dirty || saving || enriching}>
+          {saving ? "Saving…" : dirty ? "Save Changes" : "Saved"}
+        </button>
 
-          {Object.keys(extraFields).length > 0 && (
+        <button className="idf__enrich-btn" onClick={handleEnrich} disabled={enriching || saving}>
+          {enriching ? (
             <>
-              <div className="payload-detail__field payload-detail__field--divider">
-                <span className="payload-detail__label">Other fields</span>
-              </div>
-              {Object.entries(extraFields).map(([key, value]) => (
-                <div key={key} className="payload-detail__field">
-                  <label className="payload-detail__label">{fieldLabel(key)}</label>
-                  {typeof value === "boolean" ? (
-                    <label className="payload-detail__checkbox-wrap">
-                      <input type="checkbox" checked={!!extraFields[key]}
-                        onChange={(e) => setExtraField(key, e.target.checked)} />
-                      <span>{fieldLabel(key)}</span>
-                    </label>
-                  ) : (
-                    <input
-                      className="payload-detail__input"
-                      type={typeof value === "number" ? "number" : "text"}
-                      step={typeof value === "number" ? "any" : undefined}
-                      value={extraFields[key] ?? ""}
-                      onChange={(e) => setExtraField(key, typeof value === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)}
-                    />
-                  )}
-                </div>
-              ))}
+              <span className="idf__enrich-spinner" />
+              {enrichStep}
             </>
+          ) : (
+            <>✨ Auto-enrich</>
           )}
+        </button>
 
-          {(item?.createdAt || item?.updatedAt) && (
-            <div className="payload-detail__meta payload-detail__meta--top">
-              {item?.createdAt && (
-                <div className="payload-detail__meta-row">
-                  <span>Created</span>
-                  <span>{new Date(item.createdAt).toLocaleString()}</span>
-                </div>
-              )}
-              {item?.updatedAt && (
-                <div className="payload-detail__meta-row">
-                  <span>Last updated</span>
-                  <span>{new Date(item.updatedAt).toLocaleString()}</span>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="payload-detail__actions">
-            <button className="btn btn--primary" onClick={handleSave} disabled={!dirty || saving}>
-              {saving ? "Saving..." : "Save to Payload"}
-            </button>
-            <button className="btn btn--secondary" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-              {uploading ? "Uploading..." : "Upload Image"}
-            </button>
-            <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleUpload} />
-            {savedMsg && <span className="payload-detail__saved-msg">{savedMsg}</span>}
-          </div>
-        </div>
-
-        <div className="payload-detail__images">
-          <div className="payload-detail__main-img-wrap">
-            {currentImage ? (
-              currentIsVideo ? (
-                <video className="payload-detail__main-img" src={currentImage} controls />
-              ) : (
-                <img className="payload-detail__main-img" src={currentImage} alt={name || "Item"} />
-              )
-            ) : (
-              <div className="payload-detail__no-image">No media available</div>
-            )}
-          </div>
-          {mediaList.length > 0 && (
-            <div className="payload-detail__thumbs">
-              {mediaList.map((m, idx) => (
-                <div key={m.id} className="payload-detail__thumb-wrap">
-                  {m.isVideo ? (
-                    <div
-                      className={`payload-detail__thumb payload-detail__thumb--video ${idx === selectedMedia ? "payload-detail__thumb--active" : ""}`}
-                      onClick={() => setSelectedMedia(idx)}
-                      title={m.filename}
-                    >
-                      <span className="payload-detail__thumb-video-icon">&#9654;</span>
-                    </div>
-                  ) : (
-                    <img
-                      src={m.thumbUrl}
-                      alt={m.filename}
-                      className={`payload-detail__thumb ${idx === selectedMedia ? "payload-detail__thumb--active" : ""}`}
-                      onClick={() => setSelectedMedia(idx)}
-                    />
-                  )}
-                  <button
-                    className="payload-detail__thumb-remove"
-                    title="Remove from item"
-                    disabled={detaching === m.id}
-                    onClick={(e) => { e.stopPropagation(); handleDetachMedia(m.id); }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        {savedMsg && <span className="idf__saved-msg">✓ {savedMsg}</span>}
+        {error && <span className="idf__error-msg">⚠ {error}</span>}
       </div>
 
       {/* ════════ CATALOG GENERATOR ════════ */}

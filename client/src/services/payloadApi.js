@@ -27,16 +27,18 @@ export function invalidatePayloadCache(categoryId) {
   else itemsCache.clear();
 }
 
-export async function fetchWorkAreas() {
+export async function fetchWorkAreas(orgId) {
+  const cacheKey = orgId ?? "__all__";
   const now = Date.now();
-  if (workAreasCache.data && now < workAreasCache.expires) {
-    return workAreasCache.data;
-  }
-  const body = await request(`${BASE}/work-areas`);
+  // use the existing cache object keyed by orgId via a nested map
+  const cached = workAreasCache[cacheKey];
+  if (cached && now < cached.expires) return cached.data;
+  const url = orgId ? `${BASE}/work-areas?orgId=${orgId}` : `${BASE}/work-areas`;
+  const body = await request(url);
   const data = body.data ?? body;
-  workAreasCache.data = { ...body, data };
-  workAreasCache.expires = now + CACHE_TTL_MS;
-  return workAreasCache.data;
+  const result = { ...body, data };
+  workAreasCache[cacheKey] = { data: result, expires: now + CACHE_TTL_MS };
+  return result;
 }
 
 export async function fetchCategoriesByWorkArea(workAreaId) {
@@ -55,16 +57,17 @@ export async function fetchCategoriesByWorkArea(workAreaId) {
   return result;
 }
 
-export async function fetchCategories() {
+export async function fetchCategories(orgId) {
+  const cacheKey = orgId ?? "__all__";
   const now = Date.now();
-  if (categoriesCache.data && now < categoriesCache.expires) {
-    return categoriesCache.data;
-  }
-  const body = await request(`${BASE}/categories`);
+  const cached = categoriesCache[cacheKey];
+  if (cached && now < cached.expires) return cached.data;
+  const url = orgId ? `${BASE}/categories?orgId=${orgId}` : `${BASE}/categories`;
+  const body = await request(url);
   const data = body.data ?? body;
-  categoriesCache.data = { ...body, data };
-  categoriesCache.expires = now + CACHE_TTL_MS;
-  return categoriesCache.data;
+  const result = { ...body, data };
+  categoriesCache[cacheKey] = { data: result, expires: now + CACHE_TTL_MS };
+  return result;
 }
 
 export async function fetchWorkArea(id) {

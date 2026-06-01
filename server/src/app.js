@@ -10,6 +10,7 @@ import sceneRoutes from "./routes/sceneRoutes.js";
 import downloadRoutes from "./routes/downloadRoutes.js";
 import libraryRoutes from "./routes/libraryRoutes.js";
 import payloadRoutes from "./routes/payloadRoutes.js";
+import enrichmentRoutes from "./routes/enrichmentRoutes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -54,6 +55,7 @@ app.use("/api/scenes", sceneRoutes);
 app.use("/api", downloadRoutes);
 app.use("/api/library", libraryRoutes);
 app.use("/api/payload", payloadRoutes);
+app.use("/api/enrich", enrichmentRoutes);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });

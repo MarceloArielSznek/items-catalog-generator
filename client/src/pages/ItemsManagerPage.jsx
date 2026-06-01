@@ -1,10 +1,14 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { uploadOrgLogo, orgLogoUrl } from "../services/enrichApi.js";
+import EnrichWizard from "../components/EnrichWizard.jsx";
+import LogoLibrary from "../components/LogoLibrary.jsx";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
 import {
   fetchWorkAreas,
   fetchCategoriesByWorkArea,
   fetchCategories,
   fetchItemsByCategory,
+  fetchOrganizations,
   deleteWorkArea,
   deleteCategory,
   invalidatePayloadCache,
@@ -24,7 +28,7 @@ function getItemThumbnail(item, baseUrl) {
   return `${baseUrl}${url}`;
 }
 
-const PAYLOAD_BASE = "https://www.attic-tech.com";
+const PAYLOAD_BASE = "https://pr-819.preview.menaia.com";
 const ITEMS_PER_PAGE = 8;
 
 export default function ItemsManagerPage() {
@@ -32,9 +36,19 @@ export default function ItemsManagerPage() {
   const location = useLocation();
   const { itemId } = useParams();
 
+  const [organizations, setOrganizations] = useState([]);
+  const [selectedOrg, setSelectedOrg] = useState(null);
+  const [loadingOrgs, setLoadingOrgs] = useState(true);
+  const [logoRefresh, setLogoRefresh] = useState(0);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const logoInputRef = useRef(null);
+  const [showLogoLibrary, setShowLogoLibrary] = useState(false);
+  const [selectedItemIds, setSelectedItemIds] = useState(new Set());
+  const [showWizard, setShowWizard] = useState(false);
+
   const [workAreas, setWorkAreas] = useState([]);
   const [selectedWA, setSelectedWA] = useState(null);
-  const [loadingWAs, setLoadingWAs] = useState(true);
+  const [loadingWAs, setLoadingWAs] = useState(false);
 
   const [categories, setCategories] = useState([]);
   const [selectedCat, setSelectedCat] = useState(null);
@@ -57,19 +71,36 @@ export default function ItemsManagerPage() {
   const incomingWorkAreaId = location.state?.workAreaId ?? location.state?.fromWorkAreaId;
   const incomingCategoryId = location.state?.categoryId ?? location.state?.fromCategoryId;
 
-  const loadWorkAreas = useCallback(async () => {
+  // Load organizations once on mount
+  useEffect(() => {
+    setLoadingOrgs(true);
+    fetchOrganizations()
+      .then((orgs) => {
+        const list = Array.isArray(orgs) ? orgs : orgs?.data ?? [];
+        setOrganizations(list);
+        if (list.length > 0) setSelectedOrg(list[0]);
+      })
+      .catch((err) => setError(err.message))
+      .finally(() => setLoadingOrgs(false));
+  }, []);
+
+  const loadWorkAreas = useCallback(async (orgId) => {
+    if (!orgId) return;
+    setLoadingWAs(true);
     try {
       setError(null);
-      const res = await fetchWorkAreas();
+      const res = await fetchWorkAreas(orgId);
       const sorted = (res.data || []).sort((a, b) =>
         (a.name || "").localeCompare(b.name || ""),
       );
       setWorkAreas(sorted);
-      if (sorted.length > 0 && !selectedWA) {
+      if (sorted.length > 0) {
         const restore = incomingWorkAreaId
           ? sorted.find((wa) => String(wa.id) === String(incomingWorkAreaId))
           : null;
         setSelectedWA(restore || sorted[0]);
+      } else {
+        setSelectedWA(null);
       }
     } catch (err) {
       setError(err.message);
@@ -78,19 +109,27 @@ export default function ItemsManagerPage() {
     }
   }, [incomingWorkAreaId]);
 
+  // Reload work areas when selected org changes
   useEffect(() => {
-    loadWorkAreas();
-  }, [loadWorkAreas]);
+    if (selectedOrg?.id) {
+      setWorkAreas([]);
+      setSelectedWA(null);
+      setCategories([]);
+      setSelectedCat(null);
+      setItems([]);
+      loadWorkAreas(selectedOrg.id);
+    }
+  }, [selectedOrg]);
 
   useEffect(() => {
     if (activeTab !== "categories") return;
     setLoadingAllCategories(true);
     setError(null);
-    fetchCategories()
+    fetchCategories(selectedOrg?.id)
       .then((res) => setAllCategories(res?.data ?? res ?? []))
       .catch((err) => setError(err.message))
       .finally(() => setLoadingAllCategories(false));
-  }, [activeTab]);
+  }, [activeTab, selectedOrg]);
 
   const loadCategories = useCallback(async (waId) => {
     if (!waId) return;
@@ -213,23 +252,68 @@ export default function ItemsManagerPage() {
     page * ITEMS_PER_PAGE,
   );
 
-  if (loadingWAs) {
+  if (loadingOrgs) {
     return (
       <main className="page page--items-manager page--items-fixed">
-        <p>Loading work areas...</p>
+        <p>Loading organizations...</p>
       </main>
     );
   }
 
   return (
     <main className="page page--items-manager page--items-fixed">
-      <div className="page-header">
-        <div>
-          <h2 className="page__title">Items Manager</h2>
-          <p className="page__description">
-            Browse and edit items from Payload CMS
-          </p>
+      <div className="items-page-header">
+        <div className="items-page-header__left">
+          <h2 className="items-page-header__title">Items</h2>
+          {selectedOrg && (
+            <span className="items-page-header__org-badge">
+              {selectedOrg.name}
+            </span>
+          )}
         </div>
+        {organizations.length > 0 && (
+          <div className="org-selector-group">
+            {/* Logo Library button */}
+            {selectedOrg && (
+              <button
+                className="org-logo-btn"
+                title="Manage logo library"
+                onClick={() => setShowLogoLibrary(true)}
+              >
+                <img
+                  key={`${selectedOrg.id}-${logoRefresh}`}
+                  src={`${orgLogoUrl(selectedOrg.id)}?t=${logoRefresh}`}
+                  alt=""
+                  className="org-logo-btn__img"
+                  onError={(e) => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }}
+                />
+                <span className="org-logo-btn__placeholder" style={{ display: "none" }}>🎨</span>
+              </button>
+            )}
+
+          <div className="org-selector">
+            <svg className="org-selector__icon" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M10.394 2.08a1 1 0 00-.788 0l-7 3a1 1 0 000 1.84L5.25 8.051a.999.999 0 01.356-.357l4-2a1 1 0 11.788 1.84L7.667 8.94l1.94.831a1 1 0 00.787 0l7-3a1 1 0 000-1.84l-7-3z" />
+              <path d="M3.31 9.397L5 10.12v4.102a8.969 8.969 0 00-1.05-.174 1 1 0 01-.89-.89 11.115 11.115 0 01.25-3.762zm5.99 7.176A9.026 9.026 0 007 14.935v-3.957l1.818.78a3 3 0 002.364 0l5.508-2.361a11.026 11.026 0 01.25 3.762 1 1 0 01-.89.89 8.968 8.968 0 00-5.35 2.524 1 1 0 01-1.4 0zM6 18a1 1 0 001-1v-2.065a8.935 8.935 0 00-2-.712V17a1 1 0 001 1z" />
+            </svg>
+            <select
+              id="org-select"
+              className="org-selector__select"
+              value={selectedOrg?.id ?? ""}
+              onChange={(e) => {
+                const org = organizations.find((o) => String(o.id) === e.target.value);
+                if (org) setSelectedOrg(org);
+              }}
+            >
+              {organizations.map((org) => (
+                <option key={org.id} value={org.id}>
+                  {org.name || `Org ${org.id}`}
+                </option>
+              ))}
+            </select>
+          </div>
+          </div>
+        )}
       </div>
 
       {error && (
@@ -344,154 +428,185 @@ export default function ItemsManagerPage() {
 
       {activeTab === "items" && (
         <>
-          <div className="wa-selector">
-            {workAreas.map((wa) => (
-              <button
-                key={wa.id}
-                className={`wa-selector__btn ${selectedWA?.id === wa.id ? "wa-selector__btn--active" : ""}`}
-                onClick={() => setSelectedWA(wa)}
-              >
-                {wa.name || "Untitled"}
-              </button>
-            ))}
+          {/* Work area strip */}
+          <div className="wa-strip">
+            {loadingWAs ? (
+              <div className="wa-strip__loading">Loading…</div>
+            ) : (
+              workAreas.map((wa) => (
+                <button
+                  key={wa.id}
+                  className={`wa-strip__btn ${selectedWA?.id === wa.id ? "wa-strip__btn--active" : ""}`}
+                  onClick={() => setSelectedWA(wa)}
+                >
+                  {wa.name || "Untitled"}
+                </button>
+              ))
+            )}
           </div>
 
           <div className="items-layout items-layout--fixed">
-        <aside className="items-sidebar">
-          <div className="items-sidebar__header">Categories</div>
-          {loadingCats ? (
-            <p className="items-sidebar__empty">Loading...</p>
-          ) : (
-            <>
-              {categories.map((cat) => (
-                <button
-                  key={cat.id}
-                  className={`items-sidebar__item ${selectedCat?.id === cat.id ? "items-sidebar__item--active" : ""}`}
-                  onClick={() => setSelectedCat(cat)}
-                >
-                  {cat.title || cat.name || "Untitled"}
-                </button>
-              ))}
-              {categories.length === 0 && (
-                <p className="items-sidebar__empty">No categories in this work area</p>
-              )}
-            </>
-          )}
-        </aside>
-
-        <section className="items-content">
-          <div className="items-content__top">
-            {selectedCat && (
-              <div className="items-content__header">
-                <h3 className="items-content__cat-name">
-                  {selectedCat.title || selectedCat.name}
-                </h3>
-                <span className="items-content__count">
-                  {filteredItems.length} item{filteredItems.length !== 1 ? "s" : ""}
-                </span>
-              </div>
-            )}
-
-            <div className="items-toolbar">
-              <div className="search-bar search-bar--flex">
-                <input
-                  className="search-bar__input"
-                  type="text"
-                  placeholder="Filter items by name..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
-                {search && (
-                  <button
-                    className="search-bar__clear"
-                    onClick={() => setSearch("")}
-                  >
-                    ✕
-                  </button>
+            {/* Categories sidebar */}
+            <aside className="items-sidebar">
+              <div className="items-sidebar__header">
+                <span>Categories</span>
+                {categories.length > 0 && (
+                  <span className="items-sidebar__count">{categories.length}</span>
                 )}
               </div>
-              <select
-                className="items-sort"
-                value={sortBy}
-                onChange={(e) => { setSortBy(e.target.value); setPage(1); }}
-              >
-                <option value="name-asc">A → Z</option>
-                <option value="name-desc">Z → A</option>
-                <option value="newest">Newest first</option>
-                <option value="oldest">Oldest first</option>
-                <option value="updated">Recently updated</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="items-content__grid-area">
-            {loadingItems ? (
-              <p className="scenes-empty">Loading items...</p>
-            ) : pagedItems.length === 0 ? (
-              <p className="scenes-empty">
-                {search ? "No items match your filter" : "No items in this category"}
-              </p>
-            ) : (
-              <div className="library-grid">
-                {pagedItems.map((item) => {
-                  const thumb = getItemThumbnail(item, PAYLOAD_BASE);
-                  return (
-                    <div
-                      key={item.id}
-                      className="library-card"
-                      onClick={() => navigate(`/items/${item.id}`, { state: { fromWorkAreaId: selectedWA?.id, fromCategoryId: selectedCat?.id } })}
+              {loadingCats ? (
+                <div className="items-sidebar__loading">
+                  {[1,2,3,4].map(i => <div key={i} className="items-sidebar__skeleton" />)}
+                </div>
+              ) : (
+                <>
+                  {categories.map((cat) => (
+                    <button
+                      key={cat.id}
+                      className={`items-sidebar__item ${selectedCat?.id === cat.id ? "items-sidebar__item--active" : ""}`}
+                      onClick={() => setSelectedCat(cat)}
                     >
-                      <div className="library-card__img-wrap">
-                        {thumb ? (
-                          <img
-                            className="library-card__img"
-                            src={thumb}
-                            alt={item.name || "Item"}
-                            loading="lazy"
-                          />
-                        ) : (
-                          <div className="library-card__placeholder">
-                            No image
-                          </div>
-                        )}
-                      </div>
-                      <div className="library-card__body">
-                        <div className="library-card__title">
-                          {item.name || "Untitled"}
-                        </div>
-                        <div className="library-card__meta">
-                          {item.unit || ""}
-                        </div>
-                      </div>
+                      <span className="items-sidebar__item-name">{cat.title || cat.name || "Untitled"}</span>
+                      {selectedCat?.id === cat.id && items.length > 0 && (
+                        <span className="items-sidebar__item-badge">{items.length}</span>
+                      )}
+                    </button>
+                  ))}
+                  {categories.length === 0 && (
+                    <div className="items-sidebar__empty">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+                      </svg>
+                      <p>No categories</p>
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+                  )}
+                </>
+              )}
+            </aside>
 
-          {totalPages > 1 && (
-            <div className="items-pagination">
-              <button
-                className="items-pagination__btn"
-                disabled={page <= 1}
-                onClick={() => setPage((p) => p - 1)}
-              >
-                ← Prev
-              </button>
-              <span className="items-pagination__info">
-                Page {page} of {totalPages}
-              </span>
-              <button
-                className="items-pagination__btn"
-                disabled={page >= totalPages}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                Next →
-              </button>
-            </div>
-          )}
-        </section>
+            {/* Items content */}
+            <section className="items-content">
+              {/* Toolbar */}
+              <div className="items-toolbar">
+                <div className="items-toolbar__search">
+                  <svg className="items-toolbar__search-icon" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
+                  </svg>
+                  <input
+                    className="items-toolbar__search-input"
+                    type="text"
+                    placeholder={selectedCat ? `Search in ${selectedCat.title || selectedCat.name}…` : "Search items…"}
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                  {search && (
+                    <button className="items-toolbar__search-clear" onClick={() => setSearch("")}>
+                      ✕
+                    </button>
+                  )}
+                </div>
+                <div className="items-toolbar__right">
+                  {selectedCat && (
+                    <span className="items-toolbar__cat-label">
+                      {selectedCat.title || selectedCat.name}
+                      <span className="items-toolbar__cat-count">{filteredItems.length}</span>
+                    </span>
+                  )}
+                  {selectedItemIds.size > 0 && (
+                    <button className="items-enrich-btn" onClick={() => setShowWizard(true)}>
+                      ✨ Enrich {selectedItemIds.size} item{selectedItemIds.size !== 1 ? "s" : ""}
+                    </button>
+                  )}
+                  <select
+                    className="items-sort"
+                    value={sortBy}
+                    onChange={(e) => { setSortBy(e.target.value); setPage(1); }}
+                  >
+                    <option value="name-asc">A → Z</option>
+                    <option value="name-desc">Z → A</option>
+                    <option value="newest">Newest</option>
+                    <option value="oldest">Oldest</option>
+                    <option value="updated">Updated</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Grid */}
+              <div className="items-content__grid-area">
+                {loadingItems ? (
+                  <div className="items-grid-skeleton">
+                    {[1,2,3,4,5,6].map(i => <div key={i} className="items-card-skeleton" />)}
+                  </div>
+                ) : pagedItems.length === 0 ? (
+                  <div className="items-empty">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9" />
+                    </svg>
+                    <p>{search ? "No items match your search" : selectedCat ? "No items in this category" : "Select a category"}</p>
+                  </div>
+                ) : (
+                  <div className="items-grid">
+                    {pagedItems.map((item) => {
+                      const thumb = getItemThumbnail(item, PAYLOAD_BASE);
+                      return (
+                        <div
+                          key={item.id}
+                          className={`item-card ${selectedItemIds.has(item.id) ? "item-card--selected" : ""}`}
+                          onClick={() => navigate(`/items/${item.id}`, { state: { fromWorkAreaId: selectedWA?.id, fromCategoryId: selectedCat?.id } })}
+                        >
+                          <input
+                            type="checkbox"
+                            className="item-card__checkbox"
+                            checked={selectedItemIds.has(item.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              setSelectedItemIds((prev) => {
+                                const next = new Set(prev);
+                                if (e.target.checked) next.add(item.id);
+                                else next.delete(item.id);
+                                return next;
+                              });
+                            }}
+                          />
+                          <div className="item-card__img-wrap">
+                            {thumb ? (
+                              <img className="item-card__img" src={thumb} alt={item.name || "Item"} loading="lazy" />
+                            ) : (
+                              <div className="item-card__no-img">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M6.75 21h10.5A2.25 2.25 0 0019.5 18.75V6.75A2.25 2.25 0 0017.25 4.5H6.75A2.25 2.25 0 004.5 6.75v12A2.25 2.25 0 006.75 21zM16.5 8.25a.75.75 0 11-1.5 0 .75.75 0 011.5 0z" />
+                                </svg>
+                              </div>
+                            )}
+                            <div className="item-card__overlay">
+                              <span className="item-card__edit-btn">Edit →</span>
+                            </div>
+                          </div>
+                          <div className="item-card__body">
+                            <p className="item-card__name">{item.name || "Untitled"}</p>
+                            <div className="item-card__meta">
+                              {item.unit && <span className="item-card__badge">{item.unit}</span>}
+                              {item.materialCost != null && (
+                                <span className="item-card__cost">${Number(item.materialCost).toFixed(2)}</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {totalPages > 1 && (
+                <div className="items-pagination">
+                  <button className="items-pagination__btn" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>← Prev</button>
+                  <span className="items-pagination__info">Page {page} / {totalPages}</span>
+                  <button className="items-pagination__btn" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next →</button>
+                </div>
+              )}
+            </section>
           </div>
         </>
       )}
@@ -508,6 +623,25 @@ export default function ItemsManagerPage() {
           categoryId={categoryModal.id}
           onClose={() => setCategoryModal(null)}
           onSaved={() => fetchCategories().then((res) => setAllCategories(res?.data ?? res ?? []))}
+        />
+      )}
+
+      {showLogoLibrary && selectedOrg && (
+        <LogoLibrary
+          orgId={selectedOrg.id}
+          onClose={() => { setShowLogoLibrary(false); setLogoRefresh(Date.now()); }}
+        />
+      )}
+
+      {showWizard && selectedItemIds.size > 0 && (
+        <EnrichWizard
+          items={items
+            .filter((it) => selectedItemIds.has(it.id))
+            .map((it) => ({ id: it.id, name: it.name, categoryName: selectedCat?.title || selectedCat?.name || "" }))}
+          orgId={selectedOrg?.id}
+          orgName={selectedOrg?.name}
+          onClose={() => { setShowWizard(false); setSelectedItemIds(new Set()); }}
+          onFinished={() => { setShowWizard(false); setSelectedItemIds(new Set()); loadItems(selectedCat?.id); }}
         />
       )}
 
@@ -529,10 +663,12 @@ export default function ItemsManagerPage() {
               onClick={closeItemModal}
               aria-label="Close"
             >
-              ✕
+              <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
+                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+              </svg>
             </button>
             <div className="item-detail-modal__body">
-              <PayloadItemDetailPage isModal />
+              <PayloadItemDetailPage isModal orgId={selectedOrg?.id} orgName={selectedOrg?.name} />
             </div>
           </div>
         </div>

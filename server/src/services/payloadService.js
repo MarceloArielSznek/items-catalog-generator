@@ -1,9 +1,8 @@
 import env from "../config/env.js";
 import logger from "../utils/logger.js";
+import { clearMenaiaSessionCache, getMenaiaCookieHeader, probeMenaiaAuth } from "./menaiaAuthService.js";
 
 const API_PREFIX = "/api";
-const AUTH_COLLECTION = "users";
-const LOGIN_FIELD = "email";
 const WORK_AREAS_COLLECTION = "work-areas";
 const CATEGORIES_COLLECTION = "item-categories";
 const ITEMS_COLLECTION = "items";
@@ -19,27 +18,25 @@ const ITEM_UNIT_FIELD = "unit";
 const ITEM_MATERIAL_COST_FIELD = "materialCost";
 const PAGE_LIMIT = 100;
 const QUERY_DEPTH = 1;
-const TOKEN_TTL_MS = 25 * 60 * 1000;
 const CACHE_TTL_MS = 2 * 60 * 1000; // 5 min for categories/items
 
-let cachedToken = null;
-let tokenIssuedAt = 0;
-
-const workAreasCache = { data: null, expires: 0 };
+const workAreasCache = new Map(); // orgId (or "__all__") -> { data, expires }
 const categoriesByWorkAreaCache = new Map(); // workAreaId -> { data, expires }
-const categoriesCache = { data: null, expires: 0 };
+const categoriesCache = new Map(); // orgId (or "__all__") -> { data, expires }
 const itemsByCategoryCache = new Map(); // categoryId -> { data, expires }
 
-function getCachedCategories() {
-  if (categoriesCache.data !== null && Date.now() < categoriesCache.expires) {
-    return categoriesCache.data;
-  }
+export { probeMenaiaAuth };
+
+function getCachedCategories(orgId) {
+  const key = orgId ?? "__all__";
+  const entry = categoriesCache.get(key);
+  if (entry && Date.now() < entry.expires) return entry.data;
   return null;
 }
 
-function setCachedCategories(data) {
-  categoriesCache.data = data;
-  categoriesCache.expires = Date.now() + CACHE_TTL_MS;
+function setCachedCategories(orgId, data) {
+  const key = orgId ?? "__all__";
+  categoriesCache.set(key, { data, expires: Date.now() + CACHE_TTL_MS });
 }
 
 function getCachedItems(categoryId) {
@@ -60,14 +57,12 @@ export function invalidateItemsCacheForCategory(categoryId) {
 }
 
 export function invalidateWorkAreasCache() {
-  workAreasCache.data = null;
-  workAreasCache.expires = 0;
+  workAreasCache.clear();
   categoriesByWorkAreaCache.clear();
 }
 
 export function invalidateCategoriesCache() {
-  categoriesCache.data = null;
-  categoriesCache.expires = 0;
+  categoriesCache.clear();
   categoriesByWorkAreaCache.clear();
 }
 
@@ -80,24 +75,43 @@ function buildUrl(...segments) {
 
 function validateConfig() {
   const missing = [];
-  if (!env.PAYLOAD_API_URL) missing.push("API_BASE_URL");
-  if (!env.PAYLOAD_USER) missing.push("API_USER");
-  if (!env.PAYLOAD_PASSWORD) missing.push("API_PASSWORD");
+  if (!env.PAYLOAD_API_URL) missing.push("MENAIA_API_URL or API_BASE_URL");
+  if (!env.SUPABASE_URL) missing.push("SUPABASE_URL or NEXT_PUBLIC_SUPABASE_URL");
+  if (!env.SUPABASE_PUBLISHABLE_KEY) missing.push("SUPABASE_PUBLISHABLE_KEY or NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY");
+  if (!env.MENAIA_EMAIL) missing.push("MENAIA_EMAIL or API_USER");
+  if (!env.MENAIA_PASSWORD) missing.push("MENAIA_PASSWORD or API_PASSWORD");
   if (missing.length > 0) {
-    throw new Error(`Missing Payload env vars: ${missing.join(", ")}`);
+    throw new Error(`Missing Menaia auth env vars: ${missing.join(", ")}`);
+  }
+}
+
+function parseJsonBody(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
   }
 }
 
 async function payloadFetch(url, options = {}) {
-  const timeout = options.timeout || env.PAYLOAD_TIMEOUT;
+  const { retryAuth = true, timeout: requestTimeout, ...fetchOptions } = options;
+  const timeout = requestTimeout || env.PAYLOAD_TIMEOUT;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
 
+  const headers = { ...(fetchOptions.headers || {}) };
+
   try {
-    const res = await fetch(url, { ...options, signal: controller.signal });
-    const body = await res.json();
+    const res = await fetch(url, { ...fetchOptions, headers, signal: controller.signal });
+    const body = parseJsonBody(await res.text());
     if (!res.ok) {
-      const msg = body?.errors?.[0]?.message || body?.message || `Payload API ${res.status}`;
+      if (retryAuth && (res.status === 401 || res.status === 403) && headers.Cookie?.includes("-auth-token")) {
+        clearMenaiaSessionCache();
+        const nextHeaders = { ...headers, Cookie: await getMenaiaCookieHeader({ forceRefresh: true }) };
+        return payloadFetch(url, { ...fetchOptions, headers: nextHeaders, retryAuth: false });
+      }
+      const msg = body?.errors?.[0]?.message || body?.message || body || `Payload API ${res.status}`;
       throw new Error(msg);
     }
     return body;
@@ -107,34 +121,13 @@ async function payloadFetch(url, options = {}) {
 }
 
 export async function getToken() {
-  const now = Date.now();
-  if (cachedToken && now - tokenIssuedAt < TOKEN_TTL_MS) {
-    return cachedToken;
-  }
-
   validateConfig();
-  const url = buildUrl(AUTH_COLLECTION, "login");
-  const body = await payloadFetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      [LOGIN_FIELD]: env.PAYLOAD_USER,
-      password: env.PAYLOAD_PASSWORD,
-    }),
-  });
-
-  const token = body?.token;
-  if (!token) throw new Error("Payload login did not return a token.");
-
-  cachedToken = token;
-  tokenIssuedAt = now;
-  logger.info("Payload auth token acquired");
-  return token;
+  return getMenaiaCookieHeader();
 }
 
-function authHeaders(token) {
+function authHeaders(cookie) {
   return {
-    Authorization: `Bearer ${token}`,
+    Cookie: cookie,
     "Content-Type": "application/json",
   };
 }
@@ -163,16 +156,19 @@ async function fetchAllPages(collection, params = {}) {
   return docs;
 }
 
-export async function getWorkAreas() {
-  if (workAreasCache.data !== null && Date.now() < workAreasCache.expires) {
-    logger.info(`Work areas from cache (${workAreasCache.data.length} items)`);
-    return workAreasCache.data;
+export async function getWorkAreas(orgId) {
+  const key = orgId ?? "__all__";
+  const entry = workAreasCache.get(key);
+  if (entry && Date.now() < entry.expires) {
+    logger.info(`Work areas from cache (${entry.data.length} items, org=${key})`);
+    return entry.data;
   }
-  const docs = await fetchAllPages(WORK_AREAS_COLLECTION, { depth: "0" });
+  const params = { depth: "0" };
+  if (orgId) params["where[organization][equals]"] = String(orgId);
+  const docs = await fetchAllPages(WORK_AREAS_COLLECTION, params);
   const workAreas = docs.map((doc) => ({ ...doc, id: doc.id, name: doc.name }));
-  logger.info(`Fetched ${workAreas.length} work areas from Payload`);
-  workAreasCache.data = workAreas;
-  workAreasCache.expires = Date.now() + CACHE_TTL_MS;
+  logger.info(`Fetched ${workAreas.length} work areas from Payload (org=${key})`);
+  workAreasCache.set(key, { data: workAreas, expires: Date.now() + CACHE_TTL_MS });
   return workAreas;
 }
 
@@ -243,15 +239,17 @@ export async function getCategoriesByWorkArea(workAreaId) {
   return categories;
 }
 
-export async function getCategories() {
-  const cached = getCachedCategories();
+export async function getCategories(orgId) {
+  const cached = getCachedCategories(orgId);
   if (cached) {
-    logger.info(`Categories from cache (${cached.length} items)`);
+    logger.info(`Categories from cache (${cached.length} items, org=${orgId ?? "__all__"})`);
     return cached;
   }
-  const categories = await fetchAllPages(CATEGORIES_COLLECTION);
-  logger.info(`Fetched ${categories.length} categories from Payload`);
-  setCachedCategories(categories);
+  const params = {};
+  if (orgId) params["where[organization][equals]"] = String(orgId);
+  const categories = await fetchAllPages(CATEGORIES_COLLECTION, params);
+  logger.info(`Fetched ${categories.length} categories from Payload (org=${orgId ?? "__all__"})`);
+  setCachedCategories(orgId, categories);
   return categories;
 }
 
@@ -429,22 +427,29 @@ export async function uploadMedia(fileBuffer, filename, mimeType) {
     throw new Error("File buffer is required.");
   }
 
-  const token = await getToken();
   const url = buildUrl(MEDIA_COLLECTION);
 
-  const blob = new Blob([fileBuffer], { type: mimeType || "application/octet-stream" });
-  const form = new globalThis.FormData();
-  form.append("file", blob, filename || "upload.bin");
+  const sendUpload = async (cookie) => {
+    const blob = new Blob([fileBuffer], { type: mimeType || "application/octet-stream" });
+    const form = new globalThis.FormData();
+    form.append("file", blob, filename || "upload.bin");
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: form,
-  });
+    return fetch(url, {
+      method: "POST",
+      headers: { Cookie: cookie },
+      body: form,
+    });
+  };
 
-  const body = await res.json();
+  let res = await sendUpload(await getToken());
+  if (res.status === 401 || res.status === 403) {
+    clearMenaiaSessionCache();
+    res = await sendUpload(await getMenaiaCookieHeader({ forceRefresh: true }));
+  }
+
+  const body = parseJsonBody(await res.text());
   if (!res.ok) {
-    throw new Error(body?.errors?.[0]?.message || body?.message || `Media upload failed (${res.status})`);
+    throw new Error(body?.errors?.[0]?.message || body?.message || body || `Media upload failed (${res.status})`);
   }
 
   const doc = body?.doc || body;

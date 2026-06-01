@@ -5,6 +5,7 @@ import env from "../config/env.js";
 import SmartStorage from "../middleware/smartStorage.js";
 import { isAllowedMediaMimeType } from "../utils/fileValidation.js";
 import {
+  probeMenaiaAuth,
   getWorkAreas,
   getWorkArea,
   createWorkArea,
@@ -42,9 +43,18 @@ const mediaUpload = multer({
   limits: { fileSize: env.MAX_MEDIA_SIZE_BYTES },
 });
 
-router.get("/work-areas", async (_req, res, next) => {
+router.get("/session", async (_req, res, next) => {
   try {
-    const workAreas = await getWorkAreas();
+    res.json({ success: true, data: await probeMenaiaAuth() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/work-areas", async (req, res, next) => {
+  try {
+    const orgId = req.query.orgId || null;
+    const workAreas = await getWorkAreas(orgId);
     res.json({ success: true, data: workAreas });
   } catch (err) {
     next(err);
@@ -96,9 +106,10 @@ router.get("/work-areas/:id/categories", async (req, res, next) => {
   }
 });
 
-router.get("/categories", async (_req, res, next) => {
+router.get("/categories", async (req, res, next) => {
   try {
-    const categories = await getCategories();
+    const orgId = req.query.orgId || null;
+    const categories = await getCategories(orgId);
     res.json({ success: true, data: categories });
   } catch (err) {
     next(err);
