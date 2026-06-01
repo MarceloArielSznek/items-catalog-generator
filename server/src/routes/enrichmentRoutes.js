@@ -217,10 +217,10 @@ router.post("/items/batch/auto", async (req, res) => {
         send({ type: "progress", current: i, total: itemIds.length, itemId, status: "processing" });
 
         // Get candidates with smart suggestions
-        const candidates = await getEnrichCandidates(itemId, orgId || null, resolvedIndustry);
+        const enrichData = await getEnrichCandidates(itemId, orgId || null, resolvedIndustry);
 
         // Get the best image automatically
-        const bestImage = candidates.data.images[0];
+        const bestImage = enrichData.candidates && enrichData.candidates[0];
         if (!bestImage) {
           send({ type: "log", message: `⚠️ No images found for item ${itemId}` });
           continue;
@@ -229,7 +229,7 @@ router.post("/items/batch/auto", async (req, res) => {
         // Apply enrichment automatically with smart defaults
         await applyEnrich(itemId, orgId || null, {
           imageUrl: bestImage.url,
-          description: candidates.data.description,
+          description: enrichData.description,
           lighting: { brightness: 1, contrast: 1, saturation: 1, warmth: 0 },
           logoPosition: null, // auto-detect on server
           logoScale: 0.25,
