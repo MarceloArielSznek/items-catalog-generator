@@ -1,0 +1,25 @@
+{
+  "isDemoOrg": false,
+  "updatedAt": "2026-06-03T20:19:27.872Z",
+  "websiteUrl": "https://skycleanair.com/",
+  "websiteContext": {
+    "companyName": "Sky Clean Air",
+    "industry": "HVAC and air duct cleaning",
+    "services": [
+      "Air Duct Cleaning",
+      "HVAC System Installation",
+      "HVAC System Repair",
+      "Dryer Vent Cleaning",
+      "Insulation Installation",
+      "Indoor Air Quality Solutions",
+      "Emergency HVAC Services",
+      "HVAC Maintenance"
+    ],
+    "visualStyle": [
+      "clean",
+      "professional",
+      "reliable"
+    ],
+    "targetMarket": "residential and commercial clients in Southern California"
+  }
+}

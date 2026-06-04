@@ -327,6 +327,16 @@ export async function getAllItems() {
   }));
 }
 
+export async function getAllItemsForOrg(orgId) {
+  const categories = await getCategories(orgId);
+  const allItems = [];
+  for (const cat of categories) {
+    const items = await getItemsByCategory(cat.id);
+    allItems.push(...items);
+  }
+  return allItems;
+}
+
 export async function getItem(itemId) {
   if (!itemId) throw new Error("Item ID is required.");
   const token = await getToken();

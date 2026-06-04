@@ -11,6 +11,8 @@ import downloadRoutes from "./routes/downloadRoutes.js";
 import libraryRoutes from "./routes/libraryRoutes.js";
 import payloadRoutes from "./routes/payloadRoutes.js";
 import enrichmentRoutes from "./routes/enrichmentRoutes.js";
+import seedRoutes from "./routes/seedRoutes.js";
+import orgRoutes from "./routes/orgRoutes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,6 +51,7 @@ app.use(express.json());
 
 app.use("/generated", express.static(env.GENERATED_DIR));
 app.use("/scenes", express.static(env.SCENES_DIR));
+app.use("/pre-generated", express.static(path.resolve(__dirname, "pre-generated")));
 
 app.use("/api", imageRoutes);
 app.use("/api/scenes", sceneRoutes);
@@ -56,6 +59,8 @@ app.use("/api", downloadRoutes);
 app.use("/api/library", libraryRoutes);
 app.use("/api/payload", payloadRoutes);
 app.use("/api/enrich", enrichmentRoutes);
+app.use("/api/seed", seedRoutes);
+app.use("/api/orgs", orgRoutes);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });

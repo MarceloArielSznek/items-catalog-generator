@@ -33,6 +33,9 @@ const env = {
 
   // Image search (Serper.dev)
   SERPER_API_KEY: process.env.SERPER_API_KEY || "",
+
+  // Anthropic Claude (vision scoring + enrichment)
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || "",
 };
 
 env.MAX_FILE_SIZE_BYTES = env.MAX_FILE_SIZE_MB * 1024 * 1024;

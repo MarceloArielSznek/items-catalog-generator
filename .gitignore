@@ -10,6 +10,10 @@ server/src/uploads/
 server/src/generated/
 server/src/scenes/
 
+# Org runtime data (local JSON DB + binary image cache)
+server/src/generated-orgs/
+server/src/pre-generated/
+
 # Build output
 client/dist/
 

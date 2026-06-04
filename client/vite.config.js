@@ -19,6 +19,7 @@ export default defineConfig(({ mode }) => {
         "/api": target,
         "/generated": target,
         "/scenes": target,
+        "/pre-generated": target,
       },
     },
   };

@@ -1,0 +1,1774 @@
+import { useEffect, useState, useCallback, useRef } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import {
+  getOrg,
+  updateOrgSettings,
+  updateOrgResources,
+  uploadItemImage,
+  deleteItemImage,
+  generateItemImage,
+  bulkGenerateImages,
+  fetchItemCandidates,
+  selectItemImage,
+  editItemImage,
+  suggestImageStyle,
+} from "../services/orgApi.js";
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function SaveBar({ dirty, saving, status, onSave, onDiscard }) {
+  if (!dirty && !status) return null;
+  return (
+    <div className="settings-save-bar">
+      {status === "saved" && <span className="settings-save-bar__status settings-save-bar__status--ok">Changes saved</span>}
+      {status === "error" && <span className="settings-save-bar__status settings-save-bar__status--err">Save failed</span>}
+      {dirty && (
+        <>
+          <button className="btn btn--secondary" onClick={onDiscard} disabled={saving}>Discard</button>
+          <button className="btn btn--primary" onClick={onSave} disabled={saving}>
+            {saving ? "Saving…" : "Save Changes"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Field({ label, hint, children }) {
+  return (
+    <div className="settings-field">
+      <div className="settings-field__label">{label}</div>
+      {hint && <div className="settings-field__hint">{hint}</div>}
+      <div className="settings-field__control">{children}</div>
+    </div>
+  );
+}
+
+function Card({ title, description, children }) {
+  return (
+    <div className="settings-card">
+      <div className="settings-card__head">
+        <h3 className="settings-card__title">{title}</h3>
+        {description && <p className="settings-card__desc">{description}</p>}
+      </div>
+      <div className="settings-card__body">{children}</div>
+    </div>
+  );
+}
+
+// ── Organization Panel ────────────────────────────────────────────────────────
+
+function OrganizationPanel({ org, onSaved }) {
+  const [form, setForm] = useState({
+    name: org.name || "",
+    industry: org.industry || "",
+    region: org.region || "",
+    timezone: org.timezone || "",
+    websiteUrl: org.websiteUrl || "",
+  });
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+
+  const set = (key, val) => { setForm((f) => ({ ...f, [key]: val })); setDirty(true); setStatus(null); };
+
+  const initial = { name: org.name || "", industry: org.industry || "", region: org.region || "", timezone: org.timezone || "", websiteUrl: org.websiteUrl || "" };
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const updated = await updateOrgSettings(org.slug, { orgInfo: form });
+      onSaved(updated);
+      setDirty(false);
+      setStatus("saved");
+      setTimeout(() => setStatus(null), 3000);
+    } catch { setStatus("error"); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <>
+      <div className="settings-header">
+        <h2 className="settings-header__title">Organization</h2>
+        <p className="settings-header__desc">Manage your organization's basic information and settings</p>
+      </div>
+      <Card title="Company Details">
+        <Field label={<>Company Name <span className="settings-required">*</span></>}>
+          <input className="settings-input" value={form.name} onChange={(e) => set("name", e.target.value)} />
+        </Field>
+        <Field label={<>Timezone <span className="settings-required">*</span></>}>
+          <select className="settings-select" value={form.timezone} onChange={(e) => set("timezone", e.target.value)}>
+            {["America/Los_Angeles","America/Denver","America/Chicago","America/New_York"].map((tz) => (
+              <option key={tz} value={tz}>{tz.replace("America/", "")}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Website URL">
+          <input className="settings-input" type="url" value={form.websiteUrl} onChange={(e) => set("websiteUrl", e.target.value)} />
+        </Field>
+      </Card>
+      <Card title="Industry Info">
+        <Field label="Industry" hint="Primary industry category (e.g. HVAC, insulation, roofing).">
+          <input className="settings-input" value={form.industry} onChange={(e) => set("industry", e.target.value)} />
+        </Field>
+        <Field label="Region" hint="Geographic market (e.g. Southern California, Greater Austin TX).">
+          <input className="settings-input" value={form.region} onChange={(e) => set("region", e.target.value)} />
+        </Field>
+      </Card>
+      <SaveBar dirty={dirty} saving={saving} status={status} onSave={handleSave} onDiscard={() => { setForm(initial); setDirty(false); setStatus(null); }} />
+    </>
+  );
+}
+
+// ── Branch Config Panel ───────────────────────────────────────────────────────
+
+const BRANCH_CONFIG_FIELDS = [
+  { key: "baseHourlyRate", label: "Base Hourly Rate", hint: "Fully-loaded labor rate per tech-hour ($)", type: "number", step: "0.01" },
+  { key: "wasteFactor", label: "Waste Factor", hint: "Material waste multiplier (e.g. 1.08 = 8% waste)", type: "number", step: "0.01" },
+  { key: "minRetailPrice", label: "Min Retail Price", hint: "Minimum job charge before discounts ($)", type: "number", step: "1" },
+  { key: "maxDiscount", label: "Max Discount (%)", hint: "Max % a salesperson can discount", type: "number", step: "0.1" },
+  { key: "depositPercent", label: "Deposit (%)", hint: "% deposit required to book a job", type: "number", step: "0.1" },
+  { key: "maxDepositAmount", label: "Max Deposit ($)", hint: "Dollar cap on the deposit amount", type: "number", step: "1" },
+  { key: "creditCardFee", label: "Credit Card Fee", hint: "Processor rate (e.g. 0.03 = 3%)", type: "number", step: "0.001" },
+  { key: "gasCost", label: "Gas Cost ($/gal)", hint: "Local pump price per gallon", type: "number", step: "0.01" },
+  { key: "truckAverageMPG", label: "Truck Avg MPG", hint: "MPG for service vehicle fleet", type: "number", step: "0.5" },
+  { key: "laborHoursLoadUnload", label: "Load/Unload Hours", hint: "Labor hours for loading and unloading per job", type: "number", step: "0.25" },
+  { key: "subMultiplier", label: "Sub Multiplier", hint: "Cost multiplier applied to subcontracted work", type: "number", step: "0.01" },
+  { key: "cashFactor", label: "Cash Factor", hint: "Discount factor for cash payments (e.g. 0.97)", type: "number", step: "0.001" },
+  { key: "b2bMaxDiscount", label: "B2B Max Discount (%)", hint: "Max % discount for business customers", type: "number", step: "0.1" },
+  { key: "bonusPoolPercentage", label: "Bonus Pool (%)", hint: "% of revenue allocated to crew bonus pool", type: "number", step: "0.1" },
+  { key: "bonusPayoutCutoff", label: "Bonus Payout Cutoff", hint: "Performance score cutoff for bonus eligibility", type: "number", step: "1" },
+  { key: "financeFactors_3", label: "Finance Factor (3 mo.)", hint: "Markup factor for 3-month financing", type: "number", step: "0.01" },
+  { key: "financeFactors_6", label: "Finance Factor (6 mo.)", hint: "Markup factor for 6-month financing", type: "number", step: "0.01" },
+  { key: "financeFactors_12", label: "Finance Factor (12 mo.)", hint: "Markup factor for 12-month financing", type: "number", step: "0.01" },
+];
+
+function BranchConfigPanel({ org, onSaved }) {
+  const branch0 = org.branches?.[0] || {};
+  const initialForm = Object.fromEntries(BRANCH_CONFIG_FIELDS.map(({ key }) => [key, branch0[key] ?? ""]));
+  const [form, setForm] = useState(initialForm);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+
+  const set = (key, val) => { setForm((f) => ({ ...f, [key]: val })); setDirty(true); setStatus(null); };
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const branchConfig = Object.fromEntries(BRANCH_CONFIG_FIELDS.map(({ key }) => [key, parseFloat(form[key]) || 0]));
+      const updated = await updateOrgSettings(org.slug, { branchConfig });
+      onSaved(updated);
+      setDirty(false);
+      setStatus("saved");
+      setTimeout(() => setStatus(null), 3000);
+    } catch { setStatus("error"); }
+    finally { setSaving(false); }
+  }
+
+  const half = Math.ceil(BRANCH_CONFIG_FIELDS.length / 2);
+
+  return (
+    <>
+      <div className="settings-header">
+        <h2 className="settings-header__title">Branch Configuration</h2>
+        <p className="settings-header__desc">
+          Financial and operational parameters applied to all branches.
+          {org.branches?.length > 1 && ` Changes apply to all ${org.branches.length} branches.`}
+        </p>
+      </div>
+      <Card title="Labor & Materials">
+        <div className="settings-two-col">
+          <div>{BRANCH_CONFIG_FIELDS.slice(0, half).map(({ key, label, hint, type, step }) => (
+            <Field key={key} label={label} hint={hint}>
+              <input className="settings-input" type={type} step={step} value={form[key]} onChange={(e) => set(key, e.target.value)} />
+            </Field>
+          ))}</div>
+          <div>{BRANCH_CONFIG_FIELDS.slice(half).map(({ key, label, hint, type, step }) => (
+            <Field key={key} label={label} hint={hint}>
+              <input className="settings-input" type={type} step={step} value={form[key]} onChange={(e) => set(key, e.target.value)} />
+            </Field>
+          ))}</div>
+        </div>
+      </Card>
+      <SaveBar dirty={dirty} saving={saving} status={status} onSave={handleSave} onDiscard={() => { setForm(initialForm); setDirty(false); setStatus(null); }} />
+    </>
+  );
+}
+
+// ── Financing Terms Panel ─────────────────────────────────────────────────────
+
+function FinancingTermsPanel({ org, onSaved }) {
+  const initial = org.branches?.[0]?.branchFinancingTerms || [];
+  const [terms, setTerms] = useState(initial.map((t) => ({ ...t })));
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [newTerm, setNewTerm] = useState({ name: "", termMonths: 12, interestRate: 0, mostPopular: false });
+
+  const mark = (ts) => { setTerms(ts); setDirty(true); setStatus(null); };
+
+  const update = (idx, field, val) => {
+    const ts = [...terms];
+    ts[idx] = { ...ts[idx], [field]: val };
+    mark(ts);
+  };
+
+  const add = () => {
+    if (!newTerm.name.trim()) return;
+    mark([...terms, { ...newTerm, termMonths: parseInt(newTerm.termMonths) || 12, interestRate: parseFloat(newTerm.interestRate) || 0 }]);
+    setNewTerm({ name: "", termMonths: 12, interestRate: 0, mostPopular: false });
+  };
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const coerced = terms.map((t) => ({ ...t, termMonths: parseInt(t.termMonths) || 12, interestRate: parseFloat(t.interestRate) || 0 }));
+      const updated = await updateOrgSettings(org.slug, { financingTerms: coerced });
+      onSaved(updated);
+      setDirty(false);
+      setStatus("saved");
+      setTimeout(() => setStatus(null), 3000);
+    } catch { setStatus("error"); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <>
+      <div className="settings-header">
+        <h2 className="settings-header__title">Financing Terms</h2>
+        <p className="settings-header__desc">Financing options offered to customers. Applied to all branches.</p>
+      </div>
+      <Card title={`Financing Terms (${terms.length})`}>
+        <div className="factors-table">
+          <div className="factors-table__head" style={{ gridTemplateColumns: "2fr 1fr 1fr 1fr 36px" }}>
+            <span>Name</span><span>Months</span><span>Interest %</span><span>Most Popular</span><span></span>
+          </div>
+          {terms.map((t, idx) => (
+            <div key={idx} className="factors-table__row" style={{ gridTemplateColumns: "2fr 1fr 1fr 1fr 36px" }}>
+              <input className="settings-input settings-input--sm" value={t.name} onChange={(e) => update(idx, "name", e.target.value)} placeholder="e.g. 0% for 12 Months" />
+              <input className="settings-input settings-input--sm" type="number" value={t.termMonths} onChange={(e) => update(idx, "termMonths", e.target.value)} />
+              <input className="settings-input settings-input--sm" type="number" step="0.01" value={t.interestRate} onChange={(e) => update(idx, "interestRate", e.target.value)} />
+              <label className="pb-checkbox-label">
+                <input type="checkbox" checked={!!t.mostPopular} onChange={(e) => update(idx, "mostPopular", e.target.checked)} />
+                Popular
+              </label>
+              <button className="pb-btn-icon pb-btn-icon--danger" onClick={() => mark(terms.filter((_, i) => i !== idx))}>✕</button>
+            </div>
+          ))}
+          <div className="factors-table__row factors-table__row--new" style={{ gridTemplateColumns: "2fr 1fr 1fr 1fr 36px" }}>
+            <input className="settings-input settings-input--sm" placeholder="e.g. Same as Cash 6 Months" value={newTerm.name} onChange={(e) => setNewTerm({ ...newTerm, name: e.target.value })} onKeyDown={(e) => e.key === "Enter" && add()} />
+            <input className="settings-input settings-input--sm" type="number" value={newTerm.termMonths} onChange={(e) => setNewTerm({ ...newTerm, termMonths: e.target.value })} />
+            <input className="settings-input settings-input--sm" type="number" step="0.01" value={newTerm.interestRate} onChange={(e) => setNewTerm({ ...newTerm, interestRate: e.target.value })} />
+            <label className="pb-checkbox-label"><input type="checkbox" checked={newTerm.mostPopular} onChange={(e) => setNewTerm({ ...newTerm, mostPopular: e.target.checked })} />Popular</label>
+            <button className="btn btn--secondary" style={{ whiteSpace: "nowrap", fontSize: 12 }} onClick={add}>+ Add</button>
+          </div>
+        </div>
+      </Card>
+      <SaveBar dirty={dirty} saving={saving} status={status} onSave={handleSave} onDiscard={() => { setTerms(initial.map((t) => ({ ...t }))); setDirty(false); setStatus(null); }} />
+    </>
+  );
+}
+
+// ── Proposal Content Panel ────────────────────────────────────────────────────
+
+const PROPOSAL_FIELDS = [
+  { key: "disclaimer", label: "Disclaimer", hint: "Shown on every proposal — estimates, site conditions.", rows: 3 },
+  { key: "paymentTerms", label: "Payment Terms", hint: "Deposit and balance due policy.", rows: 3 },
+  { key: "insuranceClaims", label: "Insurance Claims", hint: "Customer's responsibility for insurance work.", rows: 3 },
+  { key: "termsAndConditions", label: "Terms & Conditions", hint: "Scope authorization, warranty, change orders.", rows: 4 },
+  { key: "defaultProposalEmailSubject", label: "Proposal Email Subject", hint: "Use {{companyName}} placeholder.", rows: 1 },
+  { key: "defaultProposalEmailBody", label: "Proposal Email Body", hint: "Use {{clientFirstName}}, {{companyName}}, {{proposalLink}} placeholders.", rows: 8 },
+];
+
+function ProposalContentPanel({ org, onSaved }) {
+  const branch0 = org.branches?.[0] || {};
+  const initialForm = Object.fromEntries(PROPOSAL_FIELDS.map(({ key }) => [key, branch0[key] || ""]));
+  const [form, setForm] = useState(initialForm);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+
+  const set = (key, val) => { setForm((f) => ({ ...f, [key]: val })); setDirty(true); setStatus(null); };
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const updated = await updateOrgSettings(org.slug, { proposalContent: form });
+      onSaved(updated);
+      setDirty(false);
+      setStatus("saved");
+      setTimeout(() => setStatus(null), 3000);
+    } catch { setStatus("error"); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <>
+      <div className="settings-header">
+        <h2 className="settings-header__title">Proposal Content</h2>
+        <p className="settings-header__desc">Text shown on customer proposals and emails. Applied to all branches.</p>
+      </div>
+      <Card title="Legal & Terms">
+        {PROPOSAL_FIELDS.slice(0, 4).map(({ key, label, hint, rows }) => (
+          <Field key={key} label={label} hint={hint}>
+            {rows > 1
+              ? <textarea className="settings-textarea" rows={rows} value={form[key]} onChange={(e) => set(key, e.target.value)} />
+              : <input className="settings-input" value={form[key]} onChange={(e) => set(key, e.target.value)} />}
+          </Field>
+        ))}
+      </Card>
+      <Card title="Proposal Email Template">
+        {PROPOSAL_FIELDS.slice(4).map(({ key, label, hint, rows }) => (
+          <Field key={key} label={label} hint={hint}>
+            {rows > 1
+              ? <textarea className="settings-textarea" rows={rows} value={form[key]} onChange={(e) => set(key, e.target.value)} />
+              : <input className="settings-input" value={form[key]} onChange={(e) => set(key, e.target.value)} />}
+          </Field>
+        ))}
+      </Card>
+      <SaveBar dirty={dirty} saving={saving} status={status} onSave={handleSave} onDiscard={() => { setForm(initialForm); setDirty(false); setStatus(null); }} />
+    </>
+  );
+}
+
+// ── Image Style Panel ─────────────────────────────────────────────────────────
+
+function ImageStylePanel({ org, onSaved }) {
+  const initial = org.imageStyle || { home: "", technician: "", styleNotes: "" };
+  const [form, setForm] = useState({ ...initial });
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [suggesting, setSuggesting] = useState(false);
+
+  const set = (key, val) => { setForm((f) => ({ ...f, [key]: val })); setDirty(true); setStatus(null); };
+
+  async function handleSuggest() {
+    setSuggesting(true);
+    setStatus(null);
+    try {
+      const suggestion = await suggestImageStyle(org.slug);
+      setForm({
+        home: suggestion.home || form.home,
+        technician: suggestion.technician || form.technician,
+        styleNotes: suggestion.styleNotes || form.styleNotes,
+      });
+      setDirty(true);
+    } catch (err) {
+      setStatus("error");
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const updated = await updateOrgSettings(org.slug, { imageStyle: form });
+      onSaved(updated);
+      setDirty(false);
+      setStatus("saved");
+      setTimeout(() => setStatus(null), 3000);
+    } catch { setStatus("error"); }
+    finally { setSaving(false); }
+  }
+
+  const hasStyle = form.home || form.technician || form.styleNotes;
+
+  return (
+    <>
+      <div className="settings-header">
+        <h2 className="settings-header__title">Image Style</h2>
+        <p className="settings-header__desc">
+          Define a consistent visual identity for all AI-generated item images.
+          The same home and technician will appear in every image — creating a coherent look across your entire catalog.
+        </p>
+      </div>
+
+      <Card
+        title="Visual Continuity Settings"
+        description="These descriptions are injected into every AI image prompt. Use specific, vivid language — the more detail, the more consistent the results."
+      >
+        <div className="img-style-suggest-row">
+          <div className="img-style-suggest-info">
+            <span className="img-style-suggest-info__icon">✨</span>
+            <span>Let AI suggest defaults based on your industry and region</span>
+          </div>
+          <button
+            className="btn btn--secondary"
+            onClick={handleSuggest}
+            disabled={suggesting || saving}
+          >
+            {suggesting ? "Generating…" : "AI Suggest"}
+          </button>
+        </div>
+
+        <Field
+          label="Hero Home"
+          hint="The property that appears in all outdoor and equipment images. Be specific: architectural style, materials, era, surroundings, region."
+        >
+          <textarea
+            className="settings-textarea"
+            rows={4}
+            placeholder={`e.g. "1985 single-story ranch house with beige stucco exterior and Spanish clay tile roof, attached 2-car garage, manicured green lawn, concrete driveway, palm trees, suburban Southern California neighborhood"`}
+            value={form.home}
+            onChange={(e) => set("home", e.target.value)}
+            disabled={suggesting}
+          />
+        </Field>
+
+        <Field
+          label="Technician"
+          hint="The person who appears in service images. Describe uniform, gear, and general appearance — avoid describing a specific face."
+        >
+          <textarea
+            className="settings-textarea"
+            rows={3}
+            placeholder={`e.g. "Technician in navy blue uniform with orange shoulder stripes and company logo patch, black work boots, safety glasses, mid-30s, medium build"`}
+            value={form.technician}
+            onChange={(e) => set("technician", e.target.value)}
+            disabled={suggesting}
+          />
+        </Field>
+
+        <Field
+          label="Style Notes"
+          hint="Optional: lighting, mood, color temperature, time of day."
+        >
+          <input
+            className="settings-input"
+            placeholder={`e.g. "Bright midday sunlight, warm tones, clean and organized job site"`}
+            value={form.styleNotes}
+            onChange={(e) => set("styleNotes", e.target.value)}
+            disabled={suggesting}
+          />
+        </Field>
+
+        {hasStyle && (
+          <div className="img-style-preview">
+            <div className="img-style-preview__label">Preview — what the AI will see:</div>
+            <div className="img-style-preview__block">
+              {form.home && (
+                <div className="img-style-preview__row">
+                  <span className="img-style-preview__key">🏠 Home</span>
+                  <span>{form.home}</span>
+                </div>
+              )}
+              {form.technician && (
+                <div className="img-style-preview__row">
+                  <span className="img-style-preview__key">👷 Tech</span>
+                  <span>{form.technician}</span>
+                </div>
+              )}
+              {form.styleNotes && (
+                <div className="img-style-preview__row">
+                  <span className="img-style-preview__key">🎨 Style</span>
+                  <span>{form.styleNotes}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </Card>
+
+      <SaveBar
+        dirty={dirty}
+        saving={saving}
+        status={status}
+        onSave={handleSave}
+        onDiscard={() => { setForm(initial); setDirty(false); setStatus(null); }}
+      />
+    </>
+  );
+}
+
+// ── Item Image Panel ──────────────────────────────────────────────────────────
+
+function ItemImagePanel({ slug, categoryName, item, onImageChange }) {
+  const fileRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState(null);
+  const [imgUrl, setImgUrl] = useState(item.imageUrl || null);
+
+  const bust = (url) => url ? `${url}?t=${Date.now()}` : null;
+
+  async function handleUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError(null);
+    try {
+      const res = await uploadItemImage(slug, categoryName, item.name, file);
+      setImgUrl(res.imageUrl);
+      onImageChange(res.imageUrl);
+    } catch (err) { setError(err.message); }
+    finally { setUploading(false); if (fileRef.current) fileRef.current.value = ""; }
+  }
+
+  async function handleGenerate() {
+    setGenerating(true);
+    setError(null);
+    try {
+      const res = await generateItemImage(slug, categoryName, item.name, item.notes || item.itemInfo);
+      setImgUrl(res.imageUrl);
+      onImageChange(res.imageUrl);
+    } catch (err) { setError(err.message); }
+    finally { setGenerating(false); }
+  }
+
+  async function handleDelete() {
+    if (!confirm("Remove this image?")) return;
+    setError(null);
+    try {
+      await deleteItemImage(slug, categoryName, item.name);
+      setImgUrl(null);
+      onImageChange(null);
+    } catch (err) { setError(err.message); }
+  }
+
+  return (
+    <div className="item-image-panel">
+      <div className="item-image-panel__label">Item Media</div>
+      <div className="item-image-panel__preview" onClick={() => !imgUrl && fileRef.current?.click()}>
+        {imgUrl ? (
+          <img src={bust(imgUrl)} alt={item.name} className="item-image-panel__img" />
+        ) : (
+          <div className="item-image-panel__empty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M6.75 21h10.5A2.25 2.25 0 0019.5 18.75V6.75A2.25 2.25 0 0017.25 4.5H6.75A2.25 2.25 0 004.5 6.75v12A2.25 2.25 0 006.75 21z" />
+            </svg>
+            <p>Click or drag to upload</p>
+            <span>Images (max 20MB)</span>
+          </div>
+        )}
+      </div>
+
+      {error && <div className="item-image-panel__error">{error}</div>}
+
+      <div className="item-image-panel__actions">
+        <button className="btn btn--secondary" onClick={() => fileRef.current?.click()} disabled={uploading || generating}>
+          {uploading ? "Uploading…" : "+ Upload New"}
+        </button>
+        <button className="btn btn--ai" onClick={handleGenerate} disabled={uploading || generating}>
+          {generating ? "Generating…" : "✨ Generate AI"}
+        </button>
+        {imgUrl && (
+          <button className="btn btn--danger-outline" onClick={handleDelete} disabled={uploading || generating}>Delete</button>
+        )}
+      </div>
+      <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleUpload} />
+    </div>
+  );
+}
+
+// ── Bulk Generate Modal ───────────────────────────────────────────────────────
+
+const AI_MODELS = [
+  { id: "gpt-image-1-low",  model: "gpt-image-1", quality: "low",    label: "Fast",    cost: 0.0063, badge: "Draft quality" },
+  { id: "gpt-image-1-med",  model: "gpt-image-1", quality: "medium", label: "Standard",cost: 0.0167, badge: "Good balance" },
+  { id: "dall-e-3-hd",      model: "dall-e-3",    quality: "hd",     label: "HD",      cost: 0.25,   badge: "Best quality" },
+];
+
+function BulkGenerateModal({ slug, cat, orgContext, onClose, onDone }) {
+  const { industry, region } = orgContext || {};
+  const [mode, setMode] = useState("web");
+  const [aiModelId, setAiModelId] = useState("gpt-image-1-low");
+  const [overwrite, setOverwrite] = useState(false);
+  const [phase, setPhase] = useState("config"); // config | running | done
+
+  // Live item state — tracks image + status per item
+  const [itemStates, setItemStates] = useState(() =>
+    cat.items.map((item) => ({ name: item.name, imageUrl: item.imageUrl || null, status: null }))
+  );
+
+  const existingCount = cat.items.filter((i) => i.imageUrl).length;
+  const toProcess = overwrite ? cat.items.length : (cat.items.length - existingCount);
+  const aiModel = AI_MODELS.find((m) => m.id === aiModelId);
+  const estimatedCost = aiModel ? `~$${(aiModel.cost * toProcess).toFixed(2)}` : null;
+
+  function patchItem(name, patch) {
+    setItemStates((prev) => prev.map((s) => s.name === name ? { ...s, ...patch } : s));
+  }
+
+  async function start() {
+    setPhase("running");
+    // Mark items as pending
+    setItemStates(cat.items.map((item) => ({
+      name: item.name,
+      imageUrl: item.imageUrl || null,
+      status: item.imageUrl && !overwrite ? "skipped" : "pending",
+    })));
+
+    try {
+      await bulkGenerateImages(slug, cat.name, {
+        mode,
+        model: aiModel?.model,
+        quality: aiModel?.quality,
+        overwrite,
+        onProgress: (data) => {
+          patchItem(data.item, {
+            status: data.status,
+            imageUrl: data.imageUrl || undefined,
+          });
+        },
+        onDone: (results) => {
+          setPhase("done");
+          onDone(results);
+        },
+      });
+    } catch (err) {
+      setPhase("config");
+    }
+  }
+
+  const doneCount = itemStates.filter((s) => s.status === "done").length;
+  const errorCount = itemStates.filter((s) => s.status === "error").length;
+
+  const STATUS_ICON = { done: "✓", error: "✗", skipped: "–", pending: "·", searching: "…", generating: "…" };
+  const STATUS_CLS  = { done: "bgi-item__status--done", error: "bgi-item__status--error", skipped: "bgi-item__status--skip" };
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && phase !== "running" && onClose()}>
+      <div className="modal-box modal-box--bgi">
+
+        {/* Header */}
+        <div className="modal-box__header">
+          <div>
+            <div className="bgi-header__eyebrow">Item Images</div>
+            <h3 className="bgi-header__title">{cat.name}</h3>
+          </div>
+          {phase !== "running" && <button className="modal-box__close" onClick={onClose}>✕</button>}
+        </div>
+
+        {/* Config phase */}
+        {phase === "config" && (
+          <>
+            {/* Mode selector */}
+            <div className="bgi-modes">
+              <button
+                className={`bgi-mode ${mode === "web" ? "bgi-mode--active" : ""}`}
+                onClick={() => setMode("web")}
+              >
+                <span className="bgi-mode__icon">🌐</span>
+                <div>
+                  <div className="bgi-mode__label">Web Search</div>
+                  <div className="bgi-mode__sub">Free · Scores & picks best real photo</div>
+                </div>
+              </button>
+              <button
+                className={`bgi-mode ${mode === "generate" ? "bgi-mode--active" : ""}`}
+                onClick={() => setMode("generate")}
+              >
+                <span className="bgi-mode__icon">✨</span>
+                <div>
+                  <div className="bgi-mode__label">AI Generate</div>
+                  <div className="bgi-mode__sub">Paid · Creates original image per item</div>
+                </div>
+              </button>
+            </div>
+
+            {/* AI model selector */}
+            {mode === "generate" && (
+              <div className="bgi-ai-models">
+                {AI_MODELS.map((m) => (
+                  <button
+                    key={m.id}
+                    className={`bgi-ai-model ${aiModelId === m.id ? "bgi-ai-model--active" : ""}`}
+                    onClick={() => setAiModelId(m.id)}
+                  >
+                    <span className="bgi-ai-model__label">{m.label}</span>
+                    <span className="bgi-ai-model__badge">{m.badge}</span>
+                    <span className="bgi-ai-model__cost">${m.cost}/img</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Context chips */}
+            {(industry || region) && (
+              <div className="bgi-context">
+                <span className="bgi-context__label">Context:</span>
+                {industry && <span className="bgi-context__chip">{industry}</span>}
+                {region   && <span className="bgi-context__chip">{region}</span>}
+                <span className="bgi-context__chip">item names + descriptions</span>
+              </div>
+            )}
+
+            {/* Overwrite toggle */}
+            {existingCount > 0 && (
+              <label className="pb-checkbox-label bgi-overwrite">
+                <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} />
+                Replace {existingCount} existing image{existingCount !== 1 ? "s" : ""}
+              </label>
+            )}
+
+            {/* Item preview list */}
+            <div className="bgi-items">
+              {cat.items.map((item) => {
+                const willSkip = !!item.imageUrl && !overwrite;
+                return (
+                  <div key={item.name} className={`bgi-item ${willSkip ? "bgi-item--skip" : ""}`}>
+                    <div className="bgi-item__thumb">
+                      {item.imageUrl
+                        ? <img src={item.imageUrl} alt="" />
+                        : <span>–</span>}
+                    </div>
+                    <span className="bgi-item__name">{item.name}</span>
+                    {willSkip && <span className="bgi-item__tag">exists</span>}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Action */}
+            <div className="bgi-footer">
+              {mode === "generate" && estimatedCost && (
+                <span className="bgi-footer__cost">Est. {estimatedCost} for {toProcess} image{toProcess !== 1 ? "s" : ""}</span>
+              )}
+              <button
+                className="btn btn--primary"
+                onClick={start}
+                disabled={toProcess === 0}
+              >
+                {toProcess === 0 ? "All images present" : `Generate ${toProcess} image${toProcess !== 1 ? "s" : ""}`}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Running phase — live thumbnails */}
+        {(phase === "running" || phase === "done") && (
+          <>
+            <div className="bgi-items">
+              {itemStates.map((s) => (
+                <div key={s.name} className={`bgi-item ${s.status === "skipped" ? "bgi-item--skip" : ""}`}>
+                  <div className={`bgi-item__thumb ${s.status === "searching" || s.status === "generating" ? "bgi-item__thumb--loading" : ""}`}>
+                    {s.imageUrl
+                      ? <img src={s.imageUrl} alt="" />
+                      : <span>–</span>}
+                  </div>
+                  <span className="bgi-item__name">{s.name}</span>
+                  <span className={`bgi-item__status ${STATUS_CLS[s.status] || ""}`}>
+                    {STATUS_ICON[s.status] || ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {phase === "done" && (
+              <div className="bgi-footer bgi-footer--done">
+                <span>
+                  ✓ {doneCount} generated{errorCount > 0 ? ` · ${errorCount} failed` : ""}
+                </span>
+                <button className="btn btn--secondary" onClick={onClose}>Close</button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Item Refine Modal ──────────────────────────────────────────────────────────
+
+function ItemRefineModal({ slug, item, categoryName, orgContext, onImageChange, onClose }) {
+  const { industry, region } = orgContext || {};
+  const hasExistingImage = !!item.imageUrl;
+
+  // Tab: "fix" (only when image exists) or "replace"
+  const [tab, setTab] = useState(hasExistingImage ? "fix" : "replace");
+  const [feedback, setFeedback] = useState("");
+  const [contextHint, setContextHint] = useState("");
+  const [phase, setPhase] = useState("idle"); // idle | searching | candidates | working | done
+  const [candidates, setCandidates] = useState([]);
+  // The displayed image — starts at the current item image with cache-bust
+  const [displaySrc, setDisplaySrc] = useState(
+    item.imageUrl ? `${item.imageUrl}?t=${Date.now()}` : null
+  );
+  const [error, setError] = useState(null);
+
+  const contextPills = [categoryName, industry, region].filter(Boolean);
+  const busy = phase === "searching" || phase === "working";
+
+  function applyNewImage(url) {
+    setDisplaySrc(`${url}?t=${Date.now()}`);
+    onImageChange(url);
+    setPhase("done");
+    setError(null);
+  }
+
+  // ── Fix tab ──────────────────────────────────────────────────────────────────
+  async function handleFix() {
+    if (!feedback.trim()) return;
+    setPhase("working");
+    setError(null);
+    try {
+      const res = await editItemImage(slug, categoryName, item.name, feedback.trim());
+      applyNewImage(res.imageUrl);
+    } catch (err) {
+      setError(err.message);
+      setPhase("idle");
+    }
+  }
+
+  // ── Replace tab ──────────────────────────────────────────────────────────────
+  async function handleWebSearch() {
+    setPhase("searching");
+    setError(null);
+    setCandidates([]);
+    try {
+      const results = await fetchItemCandidates(slug, categoryName, item.name, {
+        count: 3,
+        contextHint: contextHint.trim(),
+      });
+      setCandidates(results);
+      setPhase("idle"); // show candidates without blocking
+    } catch (err) {
+      setError(err.message);
+      setPhase("idle");
+    }
+  }
+
+  async function handleSelectCandidate(candidate) {
+    setPhase("working");
+    setError(null);
+    try {
+      const res = await selectItemImage(slug, categoryName, item.name, candidate.url, candidate.thumbUrl);
+      applyNewImage(res.imageUrl);
+    } catch (err) {
+      setError(err.message);
+      setPhase("idle");
+    }
+  }
+
+  async function handleAIGenerate() {
+    setPhase("working");
+    setError(null);
+    try {
+      const notes = [contextHint.trim(), item.notes, item.itemInfo].filter(Boolean).join(" · ");
+      const res = await generateItemImage(slug, categoryName, item.name, notes || undefined);
+      applyNewImage(res.imageUrl);
+    } catch (err) {
+      setError(err.message);
+      setPhase("idle");
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && !busy && onClose()}>
+      <div className="modal-box modal-box--refine">
+
+        {/* Header */}
+        <div className="modal-box__header">
+          <div>
+            <div className="bgi-header__eyebrow">Image</div>
+            <h3 className="bgi-header__title" style={{ fontSize: 15 }}>{item.name}</h3>
+          </div>
+          {!busy && <button className="modal-box__close" onClick={onClose}>✕</button>}
+        </div>
+
+        {/* Current image */}
+        <div className="refine-current">
+          {displaySrc
+            ? <img src={displaySrc} alt={item.name} className="refine-current__img" />
+            : <div className="refine-current__empty">No image yet</div>}
+        </div>
+
+        {/* Context chips */}
+        {contextPills.length > 0 && (
+          <div className="bgi-context">
+            <span className="bgi-context__label">Context:</span>
+            {contextPills.map((p) => <span key={p} className="bgi-context__chip">{p}</span>)}
+          </div>
+        )}
+
+        {/* Tabs — only show Fix tab when there's an existing image */}
+        {hasExistingImage && (
+          <div className="refine-tabs">
+            <button
+              className={`refine-tab ${tab === "fix" ? "refine-tab--active" : ""}`}
+              onClick={() => { setTab("fix"); setPhase("idle"); setError(null); setCandidates([]); }}
+              disabled={busy}
+            >
+              ✏️ Fix this image
+            </button>
+            <button
+              className={`refine-tab ${tab === "replace" ? "refine-tab--active" : ""}`}
+              onClick={() => { setTab("replace"); setPhase("idle"); setError(null); setCandidates([]); }}
+              disabled={busy}
+            >
+              🔄 Replace
+            </button>
+          </div>
+        )}
+
+        {error && <div className="img-cat-card__error">{error}</div>}
+
+        {/* ── Fix tab ── */}
+        {tab === "fix" && (
+          <>
+            <div className="refine-hint">
+              <label className="refine-hint__label">
+                What's wrong with this image?
+              </label>
+              <textarea
+                className="settings-textarea"
+                rows={3}
+                placeholder={"e.g. \"The technician has 3 hands — fix the anatomy\"\n\"The house looks like a commercial building, make it residential\"\n\"The lighting is too dark, make it bright and sunny\""}
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+            <div className="refine-actions">
+              {phase === "working"
+                ? <div className="refine-status" style={{ flex: 1 }}>Editing image with AI…</div>
+                : (
+                  <button
+                    className="btn btn--primary"
+                    style={{ flex: 1 }}
+                    onClick={handleFix}
+                    disabled={!feedback.trim() || busy}
+                  >
+                    🔧 Fix with AI
+                  </button>
+                )
+              }
+              {phase === "done" && (
+                <button className="btn btn--secondary" onClick={onClose}>Done</button>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* ── Replace tab ── */}
+        {tab === "replace" && (
+          <>
+            <div className="refine-hint">
+              <label className="refine-hint__label">
+                Extra detail <span className="refine-hint__optional">optional</span>
+              </label>
+              <input
+                className="settings-input"
+                placeholder={`e.g. "rooftop unit", "crawl space liner", "residential attic"`}
+                value={contextHint}
+                onChange={(e) => setContextHint(e.target.value)}
+                disabled={busy}
+                onKeyDown={(e) => e.key === "Enter" && !busy && handleWebSearch()}
+              />
+            </div>
+
+            {/* Candidates grid */}
+            {candidates.length > 0 && (
+              <div className="refine-candidates">
+                {candidates.map((c, i) => (
+                  <button key={i} className="refine-candidate" onClick={() => handleSelectCandidate(c)} disabled={busy}>
+                    <img src={c.thumbUrl} alt={`Option ${i + 1}`} className="refine-candidate__img" />
+                    <span className="refine-candidate__domain">{c.domain}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {phase === "searching" && <div className="refine-status">Searching web…</div>}
+            {phase === "working"   && <div className="refine-status">Saving image…</div>}
+
+            <div className="refine-actions">
+              {phase !== "working" && (
+                <>
+                  <button
+                    className="btn btn--secondary"
+                    style={{ flex: 1 }}
+                    onClick={handleWebSearch}
+                    disabled={busy}
+                  >
+                    🌐 {candidates.length > 0 ? "Search again" : "Web Search"}
+                  </button>
+                  <button
+                    className="btn btn--primary"
+                    style={{ flex: 1 }}
+                    onClick={handleAIGenerate}
+                    disabled={busy}
+                  >
+                    ✨ AI Generate
+                  </button>
+                </>
+              )}
+              {phase === "done" && (
+                <button className="btn btn--secondary" onClick={onClose} style={{ width: "100%" }}>
+                  Done
+                </button>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Price Book Panel ──────────────────────────────────────────────────────────
+
+function ItemDetailEdit({ slug, item, categoryName, factors, additionalCosts, onUpdate, onClose }) {
+  const [form, setForm] = useState({ ...item });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const toggleName = (key, name) => {
+    const current = form[key] || [];
+    set(key, current.includes(name) ? current.filter((value) => value !== name) : [...current, name]);
+  };
+
+  return (
+    <div className="item-detail-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="item-detail-box">
+        <div className="item-detail-box__header">
+          <div>
+            <div className="item-detail-box__breadcrumb">Items › {categoryName}</div>
+            <h2 className="item-detail-box__title">Edit Item</h2>
+          </div>
+          <button className="modal-box__close" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="item-detail-box__body">
+          {/* Left — fields */}
+          <div className="item-detail-box__left">
+            <Field label={<>Item Name <span className="settings-required">*</span></>}>
+              <input className="settings-input" value={form.name} onChange={(e) => set("name", e.target.value)} />
+            </Field>
+
+            <Field label="Item Category">
+              <input className="settings-input" value={categoryName} disabled style={{ background: "#f9fafb", color: "#6b7280" }} />
+            </Field>
+
+            <Field label="Item Info" hint="Technical invoice line posted to the API price book.">
+              <textarea
+                className="settings-textarea"
+                rows={3}
+                value={form.itemInfo || ""}
+                onChange={(e) => set("itemInfo", e.target.value)}
+                placeholder="Technical scope or specification..."
+              />
+            </Field>
+
+            <Field label="Customer Description" hint="Customer-facing description — what's included, when and why to use this service.">
+              <textarea
+                className="settings-textarea"
+                rows={6}
+                value={form.notes || ""}
+                onChange={(e) => set("notes", e.target.value)}
+                placeholder="Supply and install... Includes... Ideal for..."
+              />
+            </Field>
+
+            <div className="item-detail-box__section-title">Pricing</div>
+
+            <div className="item-detail-pricing-grid">
+              <Field label={<>Unit Type <span className="settings-required">*</span></>}>
+                <select className="settings-select" value={form.unit} onChange={(e) => set("unit", e.target.value)}>
+                  {["Sq. Ft.", "Linear Feet", "Each", "Hours", "Big Sq.", "Dollars"].map((u) => <option key={u}>{u}</option>)}
+                </select>
+              </Field>
+              <Field label={<>Material Cost <span className="settings-required">*</span></>}>
+                <input className="settings-input" type="number" step="0.01" value={form.materialCost} onChange={(e) => set("materialCost", parseFloat(e.target.value) || 0)} />
+              </Field>
+              <Field label={<>Labor Hours <span className="settings-required">*</span></>}>
+                <input className="settings-input" type="number" step="0.001" value={form.laborHours} onChange={(e) => set("laborHours", parseFloat(e.target.value) || 0)} />
+              </Field>
+              <Field label="Multiplier Override" hint="Leave blank to use branch pricing.">
+                <input className="settings-input" type="number" step="0.01" value={form.multiplierOverride || ""} placeholder="Leave blank" onChange={(e) => set("multiplierOverride", e.target.value)} />
+              </Field>
+            </div>
+
+            <div className="item-detail-checkboxes">
+              <label className="pb-checkbox-label">
+                <input type="checkbox" checked={!!form.subItem} onChange={(e) => set("subItem", e.target.checked)} />
+                Sub Item
+                <span className="settings-field__hint" style={{ marginLeft: 4, display: "inline" }}>(lists under Sub Services in job breakdown)</span>
+              </label>
+              <label className="pb-checkbox-label">
+                <input type="checkbox" checked={!!form.requiresInfo} onChange={(e) => set("requiresInfo", e.target.checked)} />
+                Requires Info
+              </label>
+            </div>
+
+            <div className="item-detail-box__section-title">API Relations</div>
+            <Field label="Factors" hint="These names resolve to factor IDs when the org is deployed.">
+              <div className="pb-checkbox-grid">
+                {factors.map((factor) => (
+                  <label key={factor.name} className="pb-checkbox-label">
+                    <input type="checkbox" checked={(form.factorNames || []).includes(factor.name)} onChange={() => toggleName("factorNames", factor.name)} />
+                    {factor.name}
+                  </label>
+                ))}
+              </div>
+            </Field>
+            <Field label="Additional Costs" hint="These names resolve to additional-cost IDs when the org is deployed.">
+              <div className="pb-checkbox-grid">
+                {additionalCosts.map((cost) => (
+                  <label key={cost.name} className="pb-checkbox-label">
+                    <input type="checkbox" checked={(form.additionalCostNames || []).includes(cost.name)} onChange={() => toggleName("additionalCostNames", cost.name)} />
+                    {cost.name}
+                  </label>
+                ))}
+              </div>
+            </Field>
+          </div>
+
+          {/* Right — image */}
+          <div className="item-detail-box__right">
+            <ItemImagePanel
+              slug={slug}
+              categoryName={categoryName}
+              item={form}
+              onImageChange={(url) => set("imageUrl", url)}
+            />
+          </div>
+        </div>
+
+        <div className="item-detail-box__footer">
+          <button className="btn btn--secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn--primary" onClick={() => { onUpdate(form); onClose(); }}>Save Item</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ItemRow({ slug, item, categoryName, orgContext, factors, additionalCosts, onUpdate, onDelete }) {
+  const [showDetail, setShowDetail] = useState(false);
+  const [showRefine, setShowRefine] = useState(false);
+  // Cache-bust: tracks a local timestamp appended to the img src so the browser
+  // reloads the file after a regeneration (same URL, new content on disk).
+  const [cacheBust, setCacheBust] = useState(null);
+
+  function handleImageChange(url) {
+    setCacheBust(Date.now());
+    onUpdate({ ...item, imageUrl: url });
+  }
+
+  const thumbSrc = item.imageUrl
+    ? `${item.imageUrl}${cacheBust ? `?t=${cacheBust}` : ''}`
+    : null;
+
+  return (
+    <>
+      <div className="pb-item-row">
+        <div className="pb-item-row__left">
+          {/* Thumbnail — click to refine */}
+          <button className="pb-item-row__thumb-btn" onClick={() => setShowRefine(true)} title="Refine image">
+            {thumbSrc
+              ? <img src={thumbSrc} alt="" className="pb-item-row__thumb" />
+              : <div className="pb-item-row__thumb pb-item-row__thumb--empty" />}
+            <div className="pb-item-row__thumb-overlay">↺</div>
+          </button>
+          <div className="pb-item-row__info">
+            <span className="pb-item-row__name">{item.name}</span>
+            <span className="pb-item-row__meta">{item.unit} · ${item.materialCost} · {item.laborHours}h</span>
+            {item.notes && <span className="pb-item-row__desc">{item.notes.slice(0, 100)}{item.notes.length > 100 ? "…" : ""}</span>}
+          </div>
+        </div>
+        <div className="pb-item-row__actions">
+          <button className="pb-btn-icon" onClick={() => setShowDetail(true)} title="Edit">✎</button>
+          <button className="pb-btn-icon pb-btn-icon--danger" onClick={onDelete} title="Delete">✕</button>
+        </div>
+      </div>
+
+      {showDetail && (
+        <ItemDetailEdit
+          slug={slug}
+          item={item}
+          categoryName={categoryName}
+          factors={factors}
+          additionalCosts={additionalCosts}
+          onUpdate={onUpdate}
+          onClose={() => setShowDetail(false)}
+        />
+      )}
+
+      {showRefine && (
+        <ItemRefineModal
+          slug={slug}
+          item={item}
+          categoryName={categoryName}
+          orgContext={orgContext}
+          onImageChange={handleImageChange}
+          onClose={() => setShowRefine(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function AddItemForm({ onAdd, onCancel }) {
+  const [form, setForm] = useState({ name: "", itemInfo: "", notes: "", unit: "Each", materialCost: 0, laborHours: 0, multiplierOverride: null, subItem: false, requiresInfo: false, factorNames: [], additionalCostNames: [], imageUrl: null, imageSource: null });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  return (
+    <div className="pb-item-edit pb-item-edit--new">
+      <Field label={<>Item Name <span className="settings-required">*</span></>}>
+        <input className="settings-input" placeholder="Service name" value={form.name} onChange={(e) => set("name", e.target.value)} />
+      </Field>
+      <Field label="Description" hint="Customer-facing description.">
+        <textarea className="settings-textarea" rows={3} placeholder="Describe what the service includes..." value={form.notes} onChange={(e) => set("notes", e.target.value)} />
+      </Field>
+      <Field label="Item Info" hint="Technical invoice line posted to the API.">
+        <textarea className="settings-textarea" rows={2} placeholder="Technical scope or specification..." value={form.itemInfo} onChange={(e) => set("itemInfo", e.target.value)} />
+      </Field>
+      <div className="pb-item-edit__grid">
+        <Field label="Unit">
+          <select className="settings-select" value={form.unit} onChange={(e) => set("unit", e.target.value)}>
+            {["Sq. Ft.", "Linear Feet", "Each", "Hours", "Big Sq.", "Dollars"].map((u) => <option key={u}>{u}</option>)}
+          </select>
+        </Field>
+        <Field label="Material Cost ($)">
+          <input className="settings-input" type="number" step="0.01" value={form.materialCost} onChange={(e) => set("materialCost", parseFloat(e.target.value) || 0)} />
+        </Field>
+        <Field label="Labor Hours">
+          <input className="settings-input" type="number" step="0.001" value={form.laborHours} onChange={(e) => set("laborHours", parseFloat(e.target.value) || 0)} />
+        </Field>
+      </div>
+      <div className="pb-item-edit__actions">
+        <button className="btn btn--secondary" onClick={onCancel}>Cancel</button>
+        <button className="btn btn--primary" onClick={() => { if (form.name.trim()) onAdd(form); }}>Add Item</button>
+      </div>
+    </div>
+  );
+}
+
+function CategoryBlock({ slug, cat, catIndex, orgContext, factors, additionalCosts, onUpdateCat, onDeleteCat }) {
+  const [expanded, setExpanded] = useState(false);
+  const [addingItem, setAddingItem] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameVal, setNameVal] = useState(cat.name);
+  const [bulkModal, setBulkModal] = useState(false);
+
+  const updateItem = (itemIdx, updated) => {
+    const items = [...cat.items];
+    items[itemIdx] = updated;
+    onUpdateCat({ ...cat, items });
+  };
+
+  const deleteItem = (itemIdx) => {
+    if (!window.confirm(`Delete "${cat.items[itemIdx].name}"?`)) return;
+    onUpdateCat({ ...cat, items: cat.items.filter((_, i) => i !== itemIdx) });
+  };
+
+  const addItem = (item) => { onUpdateCat({ ...cat, items: [...cat.items, item] }); setAddingItem(false); };
+
+  const imagesCount = cat.items.filter((i) => i.imageUrl).length;
+  const toggleFactor = (factorName) => {
+    const current = cat.factorNames || [];
+    onUpdateCat({
+      ...cat,
+      factorNames: current.includes(factorName) ? current.filter((name) => name !== factorName) : [...current, factorName],
+    });
+  };
+
+  return (
+    <div className="pb-category">
+      <div className="pb-category__header" onClick={() => setExpanded((v) => !v)}>
+        <div className="pb-category__left">
+          <span className="pb-category__chevron">{expanded ? "▾" : "▸"}</span>
+          {editingName ? (
+            <input
+              className="settings-input pb-category__name-input"
+              value={nameVal}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setNameVal(e.target.value)}
+              onBlur={() => { onUpdateCat({ ...cat, name: nameVal }); setEditingName(false); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { onUpdateCat({ ...cat, name: nameVal }); setEditingName(false); }
+                if (e.key === "Escape") { setNameVal(cat.name); setEditingName(false); }
+              }}
+              autoFocus
+            />
+          ) : (
+            <span className="pb-category__name">{cat.name}</span>
+          )}
+          <span className="pb-category__count">{cat.items.length} items</span>
+          {imagesCount > 0 && <span className="pb-category__count" style={{ background: "#d1fae5", color: "#065f46" }}>{imagesCount} images</span>}
+        </div>
+        <div className="pb-category__actions" onClick={(e) => e.stopPropagation()}>
+          <button className="pb-btn-icon" title="Queue category images" onClick={() => { setExpanded(true); setBulkModal(true); }}>✨</button>
+          <button className="pb-btn-icon" onClick={() => { setEditingName(true); setExpanded(true); }} title="Rename">✎</button>
+          <button className="pb-btn-icon pb-btn-icon--danger" onClick={() => onDeleteCat(catIndex)} title="Delete category">✕</button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="pb-category__body">
+          <Field label="Display Title" hint="Posted as the category title in the API.">
+            <input className="settings-input" value={cat.title || cat.name} onChange={(e) => onUpdateCat({ ...cat, title: e.target.value })} />
+          </Field>
+          <Field label="Category Factors" hint="Factors available for this category after deployment.">
+            <div className="pb-checkbox-grid">
+              {factors.map((factor) => (
+                <label key={factor.name} className="pb-checkbox-label">
+                  <input type="checkbox" checked={(cat.factorNames || []).includes(factor.name)} onChange={() => toggleFactor(factor.name)} />
+                  {factor.name}
+                </label>
+              ))}
+            </div>
+          </Field>
+          {cat.items.map((item, itemIdx) => (
+            <ItemRow
+              key={itemIdx}
+              slug={slug}
+              item={item}
+              categoryName={cat.name}
+              orgContext={orgContext}
+              factors={factors}
+              additionalCosts={additionalCosts}
+              onUpdate={(updated) => updateItem(itemIdx, updated)}
+              onDelete={() => deleteItem(itemIdx)}
+            />
+          ))}
+          {addingItem
+            ? <AddItemForm onAdd={addItem} onCancel={() => setAddingItem(false)} />
+            : <button className="pb-add-item-btn" onClick={() => setAddingItem(true)}>+ Add Item</button>}
+        </div>
+      )}
+
+      {bulkModal && (
+        <BulkGenerateModal
+          slug={slug}
+          cat={cat}
+          orgContext={orgContext}
+          onClose={() => setBulkModal(false)}
+          onDone={(results) => {
+            const updatedItems = cat.items.map((item) => {
+              const r = results.find((r) => r.itemName === item.name && r.success && r.imageUrl);
+              return r ? { ...item, imageUrl: r.imageUrl, imageSource: r.imageSource || item.imageSource, sourceUrl: r.sourceUrl || item.sourceUrl } : item;
+            });
+            onUpdateCat({ ...cat, items: updatedItems });
+            setBulkModal(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function PriceBookPanel({ org, onSaved }) {
+  const [categories, setCategories] = useState(org.resources?.categories || []);
+  const [workAreas, setWorkAreas] = useState(org.resources?.workAreas || []);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [addingCat, setAddingCat] = useState(false);
+  const [newCatName, setNewCatName] = useState("");
+
+  const markDirty = useCallback((cats) => { setCategories(cats); setDirty(true); setStatus(null); }, []);
+
+  const updateCat = (idx, updated) => {
+    const previousName = categories[idx].name;
+    const cats = [...categories];
+    cats[idx] = updated;
+    if (previousName !== updated.name) {
+      setWorkAreas((areas) => areas.map((area) => ({
+        ...area,
+        categories: (area.categories || []).map((name) => name === previousName ? updated.name : name),
+      })));
+    }
+    markDirty(cats);
+  };
+  const deleteCat = (idx) => {
+    if (!window.confirm(`Delete category "${categories[idx].name}" and all its items?`)) return;
+    const deletedName = categories[idx].name;
+    setWorkAreas((areas) => areas.map((area) => ({
+      ...area,
+      categories: (area.categories || []).filter((name) => name !== deletedName),
+    })));
+    markDirty(categories.filter((_, i) => i !== idx));
+  };
+  const addCat = () => {
+    if (!newCatName.trim()) return;
+    markDirty([...categories, { name: newCatName.trim(), title: newCatName.trim(), factorNames: [], items: [] }]);
+    setNewCatName(""); setAddingCat(false);
+  };
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const updated = await updateOrgResources(org.slug, { categories, workAreas });
+      onSaved(updated);
+      setDirty(false);
+      setStatus("saved");
+      setTimeout(() => setStatus(null), 3000);
+    } catch { setStatus("error"); }
+    finally { setSaving(false); }
+  }
+
+  const totalItems = categories.reduce((s, c) => s + c.items.length, 0);
+  const totalImages = categories.reduce((s, c) => s + c.items.filter((i) => i.imageUrl).length, 0);
+
+  return (
+    <>
+      <div className="settings-header">
+        <h2 className="settings-header__title">Price Book</h2>
+        <p className="settings-header__desc">
+          {categories.length} categories · {totalItems} items · {totalImages} images.
+          {" "}Click ✨ on a category to queue AI generation or web image selection.
+        </p>
+      </div>
+
+      <div className="pb-categories">
+        {categories.map((cat, idx) => (
+          <CategoryBlock
+            key={idx}
+            slug={org.slug}
+            cat={cat}
+            catIndex={idx}
+            orgContext={{ industry: org.industry, region: org.region }}
+            factors={org.resources?.factors || []}
+            additionalCosts={org.resources?.additionalCosts || []}
+            onUpdateCat={(updated) => updateCat(idx, updated)}
+            onDeleteCat={deleteCat}
+          />
+        ))}
+        {addingCat ? (
+          <div className="pb-add-cat-form">
+            <input className="settings-input" placeholder="Category name" value={newCatName} onChange={(e) => setNewCatName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addCat(); if (e.key === "Escape") { setAddingCat(false); setNewCatName(""); } }} autoFocus />
+            <button className="btn btn--primary" onClick={addCat}>Add</button>
+            <button className="btn btn--secondary" onClick={() => { setAddingCat(false); setNewCatName(""); }}>Cancel</button>
+          </div>
+        ) : (
+          <button className="pb-add-cat-btn" onClick={() => setAddingCat(true)}>+ Add Category</button>
+        )}
+      </div>
+
+      <SaveBar dirty={dirty} saving={saving} status={status} onSave={handleSave} onDiscard={() => { setCategories(org.resources?.categories || []); setWorkAreas(org.resources?.workAreas || []); setDirty(false); setStatus(null); }} />
+    </>
+  );
+}
+
+// ── Work Areas / Factors / Additional Costs / Multiplier Ranges — unchanged ──
+
+function WorkAreasPanel({ org, onSaved }) {
+  const allCatNames = (org.resources?.categories || []).map((c) => c.name);
+  const [workAreas, setWorkAreas] = useState(org.resources?.workAreas || []);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [newWaName, setNewWaName] = useState("");
+  const [expandedIdx, setExpandedIdx] = useState(null);
+
+  const mark = (was) => { setWorkAreas(was); setDirty(true); setStatus(null); };
+  const toggleCategory = (waIdx, catName) => {
+    const was = [...workAreas];
+    const wa = { ...was[waIdx] };
+    const cats = wa.categories || [];
+    wa.categories = cats.includes(catName) ? cats.filter((c) => c !== catName) : [...cats, catName];
+    was[waIdx] = wa; mark(was);
+  };
+  const toggleFactor = (waIdx, factorName) => {
+    const was = [...workAreas];
+    const wa = { ...was[waIdx] };
+    const names = wa.factorNames || [];
+    wa.factorNames = names.includes(factorName) ? names.filter((name) => name !== factorName) : [...names, factorName];
+    was[waIdx] = wa;
+    mark(was);
+  };
+  const addWa = () => { if (!newWaName.trim()) return; mark([...workAreas, { name: newWaName.trim(), categories: [], factorNames: [] }]); setNewWaName(""); };
+  const deleteWa = (idx) => { if (!window.confirm(`Delete work area "${workAreas[idx].name}"?`)) return; mark(workAreas.filter((_, i) => i !== idx)); };
+  const updateName = (idx, name) => { const was = [...workAreas]; was[idx] = { ...was[idx], name }; mark(was); };
+
+  async function handleSave() {
+    setSaving(true);
+    try { const updated = await updateOrgResources(org.slug, { workAreas }); onSaved(updated); setDirty(false); setStatus("saved"); setTimeout(() => setStatus(null), 3000); }
+    catch { setStatus("error"); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <>
+      <div className="settings-header"><h2 className="settings-header__title">Work Areas</h2><p className="settings-header__desc">Physical zones where work is performed. Each links to relevant item categories.</p></div>
+      <div className="pb-categories">
+        {workAreas.map((wa, idx) => (
+          <div key={idx} className="pb-category">
+            <div className="pb-category__header" onClick={() => setExpandedIdx(expandedIdx === idx ? null : idx)}>
+              <div className="pb-category__left">
+                <span className="pb-category__chevron">{expandedIdx === idx ? "▾" : "▸"}</span>
+                <span className="pb-category__name">{wa.name}</span>
+                <span className="pb-category__count">{(wa.categories || []).length} categories</span>
+              </div>
+              <div className="pb-category__actions" onClick={(e) => e.stopPropagation()}>
+                <button className="pb-btn-icon pb-btn-icon--danger" onClick={() => deleteWa(idx)}>✕</button>
+              </div>
+            </div>
+            {expandedIdx === idx && (
+              <div className="pb-category__body">
+                <Field label="Work Area Name"><input className="settings-input" value={wa.name} onChange={(e) => updateName(idx, e.target.value)} /></Field>
+                <Field label="Linked Categories" hint="Categories that apply to this work area.">
+                  <div className="pb-checkbox-grid">
+                    {allCatNames.map((cn) => (
+                      <label key={cn} className="pb-checkbox-label">
+                        <input type="checkbox" checked={(wa.categories || []).includes(cn)} onChange={() => toggleCategory(idx, cn)} />{cn}
+                      </label>
+                    ))}
+                  </div>
+                </Field>
+                <Field label="Work Area Factors" hint="Factors available for this work area after deployment.">
+                  <div className="pb-checkbox-grid">
+                    {(org.resources?.factors || []).map((factor) => (
+                      <label key={factor.name} className="pb-checkbox-label">
+                        <input type="checkbox" checked={(wa.factorNames || []).includes(factor.name)} onChange={() => toggleFactor(idx, factor.name)} />{factor.name}
+                      </label>
+                    ))}
+                  </div>
+                </Field>
+              </div>
+            )}
+          </div>
+        ))}
+        <div className="pb-add-cat-form">
+          <input className="settings-input" placeholder="New work area name (e.g. Attic, Crawl Space)" value={newWaName} onChange={(e) => setNewWaName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addWa()} />
+          <button className="btn btn--secondary" onClick={addWa}>+ Add Work Area</button>
+        </div>
+      </div>
+      <SaveBar dirty={dirty} saving={saving} status={status} onSave={handleSave} onDiscard={() => { setWorkAreas(org.resources?.workAreas || []); setDirty(false); setStatus(null); }} />
+    </>
+  );
+}
+
+function FactorsPanel({ org, onSaved }) {
+  const [factors, setFactors] = useState(org.resources?.factors || []);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [newFactor, setNewFactor] = useState({ name: "", factor: 1.0, appliesTo: "Material Cost", alwaysEnabled: false });
+
+  const mark = (fs) => { setFactors(fs); setDirty(true); setStatus(null); };
+  const updateFactor = (idx, field, val) => { const fs = [...factors]; fs[idx] = { ...fs[idx], [field]: val }; mark(fs); };
+  const deleteFactor = (idx) => { if (factors[idx].alwaysEnabled) return alert("Cannot delete the Standard factor."); mark(factors.filter((_, i) => i !== idx)); };
+  const addFactor = () => { if (!newFactor.name.trim()) return; mark([...factors, { ...newFactor, factor: parseFloat(newFactor.factor) || 1.0 }]); setNewFactor({ name: "", factor: 1.0, appliesTo: "Material Cost", alwaysEnabled: false }); };
+
+  async function handleSave() {
+    setSaving(true);
+    try { const updated = await updateOrgResources(org.slug, { factors }); onSaved(updated); setDirty(false); setStatus("saved"); setTimeout(() => setStatus(null), 3000); }
+    catch { setStatus("error"); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <>
+      <div className="settings-header"><h2 className="settings-header__title">Factors</h2><p className="settings-header__desc">Labor and material multipliers applied based on job conditions.</p></div>
+      <Card title={`Factors (${factors.length})`}>
+        <div className="factors-table">
+          <div className="factors-table__head"><span>Name</span><span>Multiplier</span><span>Applies To</span><span>Always On</span><span></span></div>
+          {factors.map((f, idx) => (
+            <div key={idx} className="factors-table__row">
+              <input className="settings-input settings-input--sm" value={f.name} disabled={f.alwaysEnabled} onChange={(e) => updateFactor(idx, "name", e.target.value)} />
+              <input className="settings-input settings-input--sm" type="number" step="0.01" value={f.factor} disabled={f.alwaysEnabled} onChange={(e) => updateFactor(idx, "factor", parseFloat(e.target.value) || 1)} />
+              <select className="settings-select settings-select--sm" value={f.appliesTo} disabled={f.alwaysEnabled} onChange={(e) => updateFactor(idx, "appliesTo", e.target.value)}>
+                <option>Material Cost</option><option>Labor Cost</option>
+              </select>
+              <input type="checkbox" checked={f.alwaysEnabled} disabled onChange={() => {}} />
+              <button className="pb-btn-icon pb-btn-icon--danger" disabled={f.alwaysEnabled} onClick={() => deleteFactor(idx)}>✕</button>
+            </div>
+          ))}
+          <div className="factors-table__row factors-table__row--new">
+            <input className="settings-input settings-input--sm" placeholder="Factor name" value={newFactor.name} onChange={(e) => setNewFactor({ ...newFactor, name: e.target.value })} />
+            <input className="settings-input settings-input--sm" type="number" step="0.01" value={newFactor.factor} onChange={(e) => setNewFactor({ ...newFactor, factor: e.target.value })} />
+            <select className="settings-select settings-select--sm" value={newFactor.appliesTo} onChange={(e) => setNewFactor({ ...newFactor, appliesTo: e.target.value })}><option>Material Cost</option><option>Labor Cost</option></select>
+            <span />
+            <button className="btn btn--secondary" onClick={addFactor}>+ Add</button>
+          </div>
+        </div>
+      </Card>
+      <SaveBar dirty={dirty} saving={saving} status={status} onSave={handleSave} onDiscard={() => { setFactors(org.resources?.factors || []); setDirty(false); setStatus(null); }} />
+    </>
+  );
+}
+
+function AdditionalCostsPanel({ org, onSaved }) {
+  const [costs, setCosts] = useState(org.resources?.additionalCosts || []);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [newCost, setNewCost] = useState({ name: "", cost: 0, appliesTo: "Material Cost" });
+
+  const mark = (cs) => { setCosts(cs); setDirty(true); setStatus(null); };
+  const updateCost = (idx, field, val) => { const cs = [...costs]; cs[idx] = { ...cs[idx], [field]: val }; mark(cs); };
+  const addCost = () => { if (!newCost.name.trim()) return; mark([...costs, { ...newCost, cost: parseFloat(newCost.cost) || 0 }]); setNewCost({ name: "", cost: 0, appliesTo: "Material Cost" }); };
+
+  async function handleSave() {
+    setSaving(true);
+    try { const updated = await updateOrgResources(org.slug, { additionalCosts: costs }); onSaved(updated); setDirty(false); setStatus("saved"); setTimeout(() => setStatus(null), 3000); }
+    catch { setStatus("error"); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <>
+      <div className="settings-header"><h2 className="settings-header__title">Additional Costs</h2><p className="settings-header__desc">Fixed costs added to jobs — permits, disposal, equipment rental, etc.</p></div>
+      <Card title={`Additional Costs (${costs.length})`}>
+        <div className="factors-table">
+          <div className="factors-table__head" style={{ gridTemplateColumns: "2fr 1fr 1.5fr 36px" }}><span>Name</span><span>Cost ($)</span><span>Applies To</span><span></span></div>
+          {costs.map((c, idx) => (
+            <div key={idx} className="factors-table__row" style={{ gridTemplateColumns: "2fr 1fr 1.5fr 36px" }}>
+              <input className="settings-input settings-input--sm" value={c.name} onChange={(e) => updateCost(idx, "name", e.target.value)} />
+              <input className="settings-input settings-input--sm" type="number" step="0.01" value={c.cost} onChange={(e) => updateCost(idx, "cost", parseFloat(e.target.value) || 0)} />
+              <select className="settings-select settings-select--sm" value={c.appliesTo} onChange={(e) => updateCost(idx, "appliesTo", e.target.value)}><option>Material Cost</option><option>Labor Cost</option></select>
+              <button className="pb-btn-icon pb-btn-icon--danger" onClick={() => mark(costs.filter((_, i) => i !== idx))}>✕</button>
+            </div>
+          ))}
+          <div className="factors-table__row factors-table__row--new" style={{ gridTemplateColumns: "2fr 1fr 1.5fr 36px" }}>
+            <input className="settings-input settings-input--sm" placeholder="Cost name" value={newCost.name} onChange={(e) => setNewCost({ ...newCost, name: e.target.value })} />
+            <input className="settings-input settings-input--sm" type="number" step="0.01" value={newCost.cost} onChange={(e) => setNewCost({ ...newCost, cost: e.target.value })} />
+            <select className="settings-select settings-select--sm" value={newCost.appliesTo} onChange={(e) => setNewCost({ ...newCost, appliesTo: e.target.value })}><option>Material Cost</option><option>Labor Cost</option></select>
+            <button className="btn btn--secondary" onClick={addCost}>+ Add</button>
+          </div>
+        </div>
+      </Card>
+      <SaveBar dirty={dirty} saving={saving} status={status} onSave={handleSave} onDiscard={() => { setCosts(org.resources?.additionalCosts || []); setDirty(false); setStatus(null); }} />
+    </>
+  );
+}
+
+function MultiplierRangesPanel({ org, onSaved }) {
+  const [ranges, setRanges] = useState(org.resources?.multiplierRanges || []);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null);
+
+  const mark = (rs) => { setRanges(rs); setDirty(true); setStatus(null); };
+  const updateRange = (idx, field, val) => { const rs = [...ranges]; rs[idx] = { ...rs[idx], [field]: val }; mark(rs); };
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const coerced = ranges.map((r) => ({ ...r, minCost: parseFloat(r.minCost) || 0, maxCost: r.maxCost === null || r.maxCost === "" ? null : parseFloat(r.maxCost), lowestMultiple: parseFloat(r.lowestMultiple) || 1, highestMultiple: parseFloat(r.highestMultiple) || 1 }));
+      const updated = await updateOrgResources(org.slug, { multiplierRanges: coerced });
+      onSaved(updated); setDirty(false); setStatus("saved"); setTimeout(() => setStatus(null), 3000);
+    } catch { setStatus("error"); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <>
+      <div className="settings-header"><h2 className="settings-header__title">Multiplier Ranges</h2><p className="settings-header__desc">Cost-based markup multipliers. Retail = (material + labor cost) × multiplier.</p></div>
+      <Card title={`Multiplier Ranges (${ranges.length})`}>
+        <div className="factors-table">
+          <div className="factors-table__head" style={{ gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 36px" }}><span>Name</span><span>Min ($)</span><span>Max ($)</span><span>Low ×</span><span>High ×</span><span></span></div>
+          {ranges.map((r, idx) => (
+            <div key={idx} className="factors-table__row" style={{ gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 36px" }}>
+              <input className="settings-input settings-input--sm" value={r.name} onChange={(e) => updateRange(idx, "name", e.target.value)} />
+              <input className="settings-input settings-input--sm" type="number" value={r.minCost} onChange={(e) => updateRange(idx, "minCost", e.target.value)} />
+              <input className="settings-input settings-input--sm" type="number" value={r.maxCost ?? ""} placeholder="∞" onChange={(e) => updateRange(idx, "maxCost", e.target.value === "" ? null : e.target.value)} />
+              <input className="settings-input settings-input--sm" type="number" step="0.01" value={r.lowestMultiple} onChange={(e) => updateRange(idx, "lowestMultiple", e.target.value)} />
+              <input className="settings-input settings-input--sm" type="number" step="0.01" value={r.highestMultiple} onChange={(e) => updateRange(idx, "highestMultiple", e.target.value)} />
+              <span />
+            </div>
+          ))}
+        </div>
+      </Card>
+      <SaveBar dirty={dirty} saving={saving} status={status} onSave={handleSave} onDiscard={() => { setRanges(org.resources?.multiplierRanges || []); setDirty(false); setStatus(null); }} />
+    </>
+  );
+}
+
+// ── Sidebar Nav ───────────────────────────────────────────────────────────────
+
+const NAV = [
+  {
+    group: "GENERAL",
+    items: [
+      { id: "organization", label: "Organization", icon: "⊞" },
+      { id: "image-style", label: "Image Style", icon: "🎨" },
+    ],
+  },
+  {
+    group: "FINANCIAL",
+    items: [
+      { id: "branch-config", label: "Branch Config", icon: "⚙" },
+      { id: "multiplier-ranges", label: "Multiplier Ranges", icon: "×" },
+      { id: "financing-terms", label: "Financing Terms", icon: "%" },
+      { id: "proposal-content", label: "Proposal Content", icon: "✉" },
+    ],
+  },
+  {
+    group: "CATALOG",
+    items: [
+      { id: "price-book", label: "Price Book", icon: "☰" },
+      { id: "work-areas", label: "Work Areas", icon: "◎" },
+      { id: "factors", label: "Factors", icon: "f" },
+      { id: "additional-costs", label: "Additional Costs", icon: "+" },
+    ],
+  },
+];
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+
+export default function OrgSettingsPage() {
+  const { slug, section: sectionParam } = useParams();
+  const navigate = useNavigate();
+  const [org, setOrg] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [activeSection, setActiveSection] = useState(sectionParam || "organization");
+  const [search, setSearch] = useState("");
+
+  useEffect(() => { setActiveSection(sectionParam || "organization"); }, [sectionParam]);
+
+  useEffect(() => {
+    getOrg(slug)
+      .then((data) => { setOrg(data); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  }, [slug]);
+
+  const handleSaved = (updated) => setOrg(updated);
+  const navTo = (id) => { setActiveSection(id); navigate(`/orgs/${slug}/settings/${id}`, { replace: true }); };
+
+  const filteredNav = search.trim()
+    ? NAV.map((g) => ({ ...g, items: g.items.filter((i) => i.label.toLowerCase().includes(search.toLowerCase())) })).filter((g) => g.items.length)
+    : NAV;
+
+  if (loading) return <div className="page"><div className="dashboard-empty"><div className="spinner" /><p>Loading…</p></div></div>;
+  if (error || !org) return <div className="page"><div className="dashboard-empty"><p className="error-text">{error || "Org not found"}</p><button className="btn btn--secondary" onClick={() => navigate("/")}>← Back</button></div></div>;
+
+  const renderPanel = () => {
+    switch (activeSection) {
+      case "organization":      return <OrganizationPanel org={org} onSaved={handleSaved} />;
+      case "image-style":       return <ImageStylePanel org={org} onSaved={handleSaved} />;
+      case "branch-config":     return <BranchConfigPanel org={org} onSaved={handleSaved} />;
+      case "financing-terms":   return <FinancingTermsPanel org={org} onSaved={handleSaved} />;
+      case "proposal-content":  return <ProposalContentPanel org={org} onSaved={handleSaved} />;
+      case "price-book":        return <PriceBookPanel org={org} onSaved={handleSaved} />;
+      case "work-areas":        return <WorkAreasPanel org={org} onSaved={handleSaved} />;
+      case "factors":           return <FactorsPanel org={org} onSaved={handleSaved} />;
+      case "additional-costs":  return <AdditionalCostsPanel org={org} onSaved={handleSaved} />;
+      case "multiplier-ranges": return <MultiplierRangesPanel org={org} onSaved={handleSaved} />;
+      default:                  return <OrganizationPanel org={org} onSaved={handleSaved} />;
+    }
+  };
+
+  return (
+    <div className="settings-page">
+      <aside className="settings-sidebar">
+        <div className="settings-sidebar__top">
+          <div className="settings-sidebar__org-name">{org.name}</div>
+          <button className="settings-sidebar__back" onClick={() => navigate(`/orgs/${slug}`)}>← Back to Org</button>
+          <div className="settings-sidebar__search-wrap">
+            <input className="settings-sidebar__search" placeholder="Type here to search..." value={search} onChange={(e) => setSearch(e.target.value)} />
+          </div>
+        </div>
+        <nav className="settings-sidebar__nav">
+          {filteredNav.map((group) => (
+            <div key={group.group} className="settings-nav-group">
+              <div className="settings-nav-group__label">{group.group}</div>
+              {group.items.map((item) => (
+                <button key={item.id} className={`settings-nav-item ${activeSection === item.id ? "settings-nav-item--active" : ""}`} onClick={() => navTo(item.id)}>
+                  <span className="settings-nav-item__icon">{item.icon}</span>{item.label}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+      </aside>
+      <main className="settings-main">{renderPanel()}</main>
+    </div>
+  );
+}

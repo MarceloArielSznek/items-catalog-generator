@@ -6,11 +6,72 @@ import OpenAI from "openai";
 import env from "../config/env.js";
 import logger from "../utils/logger.js";
 import { findBestImage, findImageCandidates, downloadImage } from "./imageSearchService.js";
-import { getItem, updateItem, uploadMedia, attachMediaToItem, detachMediaFromItem } from "./payloadService.js";
+import { getItem, updateItem, uploadMedia, attachMediaToItem, detachMediaFromItem, getCategories } from "./payloadService.js";
+import { getRejectedImageUrls as getFeedbackRejections, getAllFeedback, getAcceptedSiblingUrls, normalizeItemBaseName } from "./feedbackService.js";
+import { getOrgConfig } from "./orgConfigService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOGOS_DIR = path.resolve(__dirname, "../logos");
+const BASE_IMAGES_DIR = path.resolve(__dirname, "../base-images");
+const PRE_GENERATED_DIR = path.resolve(__dirname, "../pre-generated");
 const LOGO_VARIANTS = ["white", "dark", "color", "default"];
+
+// ── Pre-generated AI image storage (per org + item) ───────────────────────────
+
+export async function savePreGeneratedImage(orgId, itemId, buffer) {
+  const dir = path.join(PRE_GENERATED_DIR, `org-${orgId}`);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `item-${itemId}.jpg`), buffer);
+}
+
+export async function loadPreGeneratedImage(orgId, itemId) {
+  try {
+    return await fs.readFile(path.join(PRE_GENERATED_DIR, `org-${orgId}`, `item-${itemId}.jpg`));
+  } catch {
+    return null;
+  }
+}
+
+export async function listPreGeneratedItemIds(orgId) {
+  try {
+    const files = await fs.readdir(path.join(PRE_GENERATED_DIR, `org-${orgId}`));
+    return files.filter(f => f.startsWith("item-") && f.endsWith(".jpg"))
+      .map(f => f.replace("item-", "").replace(".jpg", ""));
+  } catch {
+    return [];
+  }
+}
+
+export async function deletePreGeneratedImage(orgId, itemId) {
+  try {
+    await fs.unlink(path.join(PRE_GENERATED_DIR, `org-${orgId}`, `item-${itemId}.jpg`));
+  } catch { /* already gone */ }
+}
+
+// ── Base image storage (logo-free, for demo orgs) ─────────────────────────────
+
+async function saveBaseImage(itemId, imageBuffer) {
+  await fs.mkdir(BASE_IMAGES_DIR, { recursive: true });
+  await fs.writeFile(path.join(BASE_IMAGES_DIR, `${itemId}.jpg`), imageBuffer);
+  logger.info(`Base image saved: itemId=${itemId}`);
+}
+
+export async function loadBaseImage(itemId) {
+  try {
+    return await fs.readFile(path.join(BASE_IMAGES_DIR, `${itemId}.jpg`));
+  } catch {
+    return null;
+  }
+}
+
+export async function listBaseImageItemIds() {
+  try {
+    const files = await fs.readdir(BASE_IMAGES_DIR);
+    return files.filter(f => f.endsWith(".jpg")).map(f => f.replace(".jpg", ""));
+  } catch {
+    return [];
+  }
+}
 
 // ── Logo storage ──────────────────────────────────────────────────────────────
 
@@ -363,31 +424,64 @@ export async function enrichItem(itemId, orgId, onProgress = () => {}, industryC
 
 // ── Wizard: get candidates + description (no upload) ─────────────────────────
 
-export async function getEnrichCandidates(itemId, orgId, industryContext = "") {
+// ── Helper: get rejected image URLs for this item ────────────────────────────
+// (delegates to feedbackService)
+async function getRejectedImageUrls(itemId, orgId) {
+  if (!orgId) return new Set();
+  return getFeedbackRejections(itemId, orgId);
+}
+
+export async function getEnrichCandidates(itemId, orgId, industryContext = "", { skipWebSearch = false } = {}) {
   const itemRes = await getItem(itemId);
   const item = itemRes.data || itemRes;
   const itemName = item.name || `Item ${itemId}`;
   const categoryName = item.category?.title || item.category?.name || "";
   const unit = item.unit || "";
 
+  // Get rejected URLs so we don't repeat them AND use as negative examples for ML
+  const rejectedUrls = await getRejectedImageUrls(itemId, orgId);
+  // Also exclude URLs already accepted for sibling items (same service, different size/BTU)
+  const siblingAcceptedUrls = await getAcceptedSiblingUrls(itemId, itemName, orgId);
+  const excludedUrls = new Set([...rejectedUrls, ...siblingAcceptedUrls]);
+
+  const badExamples = Array.from(rejectedUrls).slice(0, 3);
+
   const [description, candidates] = await Promise.all([
     generateDescription(itemName, categoryName, unit),
-    findImageCandidates(itemName, categoryName, industryContext, 6),
+    skipWebSearch
+      ? Promise.resolve([])
+      : findImageCandidates(itemName, categoryName, industryContext, 8, badExamples),
   ]);
 
+  // Filter out already-rejected images and sibling-accepted images
+  const filteredCandidates = candidates.filter((c) => !excludedUrls.has(c.url));
+
   const logoVariants = orgId ? await getLogoVariants(orgId) : [];
+
+  // Check for a pre-generated AI image for this item — serve via /pre-generated route
+  const preGenCandidates = [];
+  if (orgId) {
+    const preGenBuf = await loadPreGeneratedImage(orgId, itemId);
+    if (preGenBuf) {
+      const preGenUrl = `/pre-generated/org-${orgId}/item-${itemId}.jpg`;
+      preGenCandidates.push({ url: preGenUrl, thumbUrl: preGenUrl, domain: "ai-generated", score: 10, isAI: true });
+    }
+  }
 
   return {
     itemId,
     itemName,
     categoryName,
     description,
-    candidates: candidates.map((c) => ({
-      url: c.url,
-      thumbUrl: c.thumbUrl,
-      domain: c.domain,
-      score: c.totalScore,
-    })),
+    candidates: [
+      ...preGenCandidates,
+      ...filteredCandidates.slice(0, preGenCandidates.length > 0 ? 5 : 6).map((c) => ({
+        url: c.url,
+        thumbUrl: c.thumbUrl,
+        domain: c.domain,
+        score: c.totalScore,
+      })),
+    ],
     hasLogo: logoVariants.length > 0,
     logoVariants: logoVariants.map((v) => v.variant),
   };
@@ -402,17 +496,18 @@ export async function applyEnrich(itemId, orgId, {
   logoPosition = null,
   logoScale = 0.25,
   logoVariant = null,   // null = auto-select
+  thumbUrlFallback = null,
 }) {
   const itemRes = await getItem(itemId);
   const item = itemRes.data || itemRes;
   const itemName = item.name || `Item ${itemId}`;
 
-  // Download selected image
-  let imageBuffer = await downloadImage(imageUrl);
+  // Download selected image (with fallback to thumbUrl if main URL fails)
+  let imageBuffer = await downloadImage(imageUrl, thumbUrlFallback);
 
-  // Normalize size
+  // Normalize to square 1080×1080 (crop center) — matches proposal display format
   imageBuffer = await sharp(imageBuffer)
-    .resize({ width: 1200, withoutEnlargement: true })
+    .resize(1080, 1080, { fit: "cover", position: "centre" })
     .jpeg({ quality: 88 })
     .toBuffer();
 
@@ -441,6 +536,10 @@ export async function applyEnrich(itemId, orgId, {
 
   imageBuffer = await adjusted.jpeg({ quality: 88 }).toBuffer();
 
+  // Demo org: persist base image (no logo) for later reuse
+  const orgCfg = orgId ? await getOrgConfig(orgId) : null;
+  if (orgCfg?.isDemoOrg) await saveBaseImage(itemId, imageBuffer);
+
   // Apply logo — use specified variant or auto-select
   let logoBuffer = null;
   if (orgId && logoPosition) {
@@ -449,7 +548,7 @@ export async function applyEnrich(itemId, orgId, {
     } else {
       // Auto-select based on brightness at logo zone
       const { width, height } = await sharp(imageBuffer).metadata();
-      const margin = Math.round(width * 0.04);
+      const margin = Math.round(width * 0.08);
       const sampleSize = Math.min(120, Math.round(width * 0.25));
       const positions = {
         "top-left": { left: margin, top: margin },
@@ -482,7 +581,7 @@ export async function applyEnrich(itemId, orgId, {
     const logoW = logoMeta.width;
     const logoH = logoMeta.height;
     const { height } = await sharp(imageBuffer).metadata();
-    const margin = Math.round(width * 0.04);
+    const margin = Math.round(width * 0.08);
 
     const positions = {
       "top-left":      { left: margin,             top: margin },
@@ -535,4 +634,136 @@ export async function applyEnrich(itemId, orgId, {
   if (description) await updateItem(itemId, { itemInfo: description });
 
   return { success: true, itemName, mediaId: mediaDoc?.id };
+}
+
+
+// ── Bulk apply logo to previously saved base images ───────────────────────────
+
+export async function bulkApplyLogo(orgId, itemIds) {
+  const succeeded = [];
+  const failed = [];
+
+  for (const itemId of itemIds) {
+    try {
+      const baseBuffer = await loadBaseImage(itemId);
+      if (!baseBuffer) throw new Error("No base image found");
+
+      const itemRes = await getItem(itemId);
+      const item = itemRes.data || itemRes;
+      const itemName = item.name || `Item ${itemId}`;
+
+      const logoVariants = await getLogoVariants(orgId);
+      if (logoVariants.length === 0) throw new Error("No logo for org");
+
+      // Auto-detect best logo position and variant using bottom-right as default
+      const { width, height } = await sharp(baseBuffer).metadata();
+      const margin = Math.round(width * 0.04);
+      const sampleSize = Math.min(120, Math.round(width * 0.25));
+      const zone = { left: width - sampleSize - margin, top: height - sampleSize - margin };
+      const { data: sd } = await sharp(baseBuffer)
+        .extract({ left: Math.max(0, zone.left), top: Math.max(0, zone.top), width: sampleSize, height: sampleSize })
+        .resize(8, 8).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+      let rr = 0, gg = 0, bb = 0;
+      for (let i = 0; i < sd.length; i += 3) { rr += sd[i]; gg += sd[i + 1]; bb += sd[i + 2]; }
+      const bright = (rr + gg + bb) / (3 * (sd.length / 3));
+
+      const bestVariant = await selectBestLogoVariant(orgId, bright);
+      const logoBuffer = bestVariant ? await getLogo(orgId, bestVariant) : null;
+      if (!logoBuffer) throw new Error("Could not load logo buffer");
+
+      const logoPosition = "bottom-right";
+      const logoScale = 0.25;
+      const maxLogoW = Math.round(width * logoScale);
+      const resizedLogo = await sharp(logoBuffer)
+        .resize({ width: maxLogoW, withoutEnlargement: true }).png().toBuffer();
+      const logoMeta = await sharp(resizedLogo).metadata();
+      const logoW = logoMeta.width;
+      const logoH = logoMeta.height;
+
+      const pos = { left: width - logoW - margin, top: height - logoH - margin };
+      let finalLogo = resizedLogo;
+      if (bright > 140) finalLogo = await sharp(resizedLogo).negate({ alpha: false }).toBuffer();
+
+      const finalBuffer = await sharp(baseBuffer)
+        .composite([{ input: finalLogo, top: pos.top, left: pos.left }])
+        .jpeg({ quality: 90 })
+        .toBuffer();
+
+      // Replace media on item
+      const existingMedia = Array.isArray(item.media)
+        ? item.media : item.media ? [item.media] : [];
+      for (const m of existingMedia) {
+        const mid = typeof m === "object" ? m.id : m;
+        if (mid) await detachMediaFromItem(itemId, mid).catch(() => {});
+      }
+
+      const filename = `${itemName.replace(/\s+/g, "-").toLowerCase()}-enriched.jpg`;
+      const mediaDoc = await uploadMedia(finalBuffer, filename, "image/jpeg");
+      if (mediaDoc?.id) await attachMediaToItem(itemId, mediaDoc.id);
+
+      logger.info(`bulkApplyLogo: ✓ itemId=${itemId} (${itemName})`);
+      succeeded.push({ itemId });
+    } catch (err) {
+      logger.warn(`bulkApplyLogo: ✗ itemId=${itemId}: ${err.message}`);
+      failed.push({ itemId, error: err.message });
+    }
+  }
+
+  return { succeeded, failed };
+}
+
+// ── Training: get random unreviewed items for training wizard ─────────────────
+
+export async function getItemsForTraining(orgId, count = 10) {
+  // 1. Get all categories for this org
+  const categories = await getCategories(orgId);
+  if (!categories || categories.length === 0) {
+    throw new Error("No categories found for this organization");
+  }
+
+  // 2. Get all items across all categories (sample up to 5 items per cat)
+  const { getItemsByCategory } = await import("./payloadService.js");
+  const allItems = [];
+
+  for (const cat of categories) {
+    try {
+      const items = await getItemsByCategory(cat.id);
+      const sample = items.slice(0, 5).map((item) => ({
+        id: item.id,
+        name: item.name || `Item ${item.id}`,
+        categoryId: cat.id,
+        categoryName: cat.title || cat.name || "Uncategorized",
+      }));
+      allItems.push(...sample);
+    } catch { /* skip categories with issues */ }
+  }
+
+  if (allItems.length === 0) throw new Error("No items found for training");
+
+  // 3. Deduplicate by base name — only one item per family of similar names
+  //    (e.g. "Mini Split 9000 BTU" and "Mini Split 18000 BTU" → keep one)
+  const seenBaseNames = new Set();
+  const dedupedItems = allItems.filter((item) => {
+    const base = normalizeItemBaseName(item.name);
+    if (seenBaseNames.has(base)) return false;
+    seenBaseNames.add(base);
+    return true;
+  });
+
+  // 4. Prioritize items that haven't been reviewed yet
+  const allFeedback = await getAllFeedback();
+  const reviewedItemIds = new Set(
+    allFeedback.filter((f) => String(f.orgId) === String(orgId)).map((f) => String(f.itemId))
+  );
+
+  const unreviewed = dedupedItems.filter((item) => !reviewedItemIds.has(String(item.id)));
+  const reviewed = dedupedItems.filter((item) => reviewedItemIds.has(String(item.id)));
+
+  // Shuffle both pools
+  const shuffle = (arr) => arr.sort(() => Math.random() - 0.5);
+  const pool = [...shuffle(unreviewed), ...shuffle(reviewed)];
+
+  logger.info(`Training pool: ${unreviewed.length} unreviewed, ${reviewed.length} reviewed — picking ${count}`);
+
+  return pool.slice(0, count);
 }
