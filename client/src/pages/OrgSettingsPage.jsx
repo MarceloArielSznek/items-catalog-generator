@@ -12,6 +12,10 @@ import {
   selectItemImage,
   editItemImage,
   suggestImageStyle,
+  listOrgLogos,
+  uploadOrgLogo,
+  deleteOrgLogo,
+  bulkApplyOrgLogo,
 } from "../services/orgApi.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -483,6 +487,173 @@ function ImageStylePanel({ org, onSaved }) {
   );
 }
 
+// ── Logo Panel ────────────────────────────────────────────────────────────────
+
+const LOGO_VARIANTS = [
+  { id: "white",   label: "White",   bg: "#1f2937", hint: "For dark backgrounds" },
+  { id: "dark",    label: "Dark",    bg: "#f9fafb", hint: "For light backgrounds" },
+  { id: "color",   label: "Color",   bg: "#e5e7eb", hint: "For neutral backgrounds" },
+  { id: "default", label: "Default", bg: "#f3f4f6", hint: "Fallback variant" },
+];
+
+function LogoPanel({ org }) {
+  const { slug } = org;
+  const [variants, setVariants] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [applying, setApplying] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [imgBust, setImgBust] = useState(Date.now());
+  const fileRefs = useRef({});
+
+  useEffect(() => {
+    listOrgLogos(slug)
+      .then(setVariants)
+      .catch(() => setVariants([]))
+      .finally(() => setLoading(false));
+  }, [slug]);
+
+  const itemsWithImages = (org.resources?.categories || [])
+    .flatMap((c) => c.items || [])
+    .filter((i) => i.imageUrl).length;
+
+  async function handleUpload(variantId, file) {
+    if (!file) return;
+    setError(null);
+    try {
+      await uploadOrgLogo(slug, variantId, file);
+      const updated = await listOrgLogos(slug);
+      setVariants(updated);
+      setImgBust(Date.now());
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleDelete(variantId) {
+    setError(null);
+    try {
+      await deleteOrgLogo(slug, variantId);
+      const updated = await listOrgLogos(slug);
+      setVariants(updated);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleBulkApply() {
+    setApplying(true);
+    setResult(null);
+    setError(null);
+    try {
+      const data = await bulkApplyOrgLogo(slug);
+      setResult(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="settings-header">
+        <h2 className="settings-header__title">Logo</h2>
+        <p className="settings-header__desc">
+          Upload logo variants and apply them to all item images. Originals are kept — a separate logo copy is saved alongside each image.
+        </p>
+      </div>
+
+      <Card title="Logo Variants" description="Upload different versions. The best one is auto-selected per image based on background brightness.">
+        {loading ? (
+          <div style={{ padding: "24px", textAlign: "center", color: "#9ca3af" }}>Loading…</div>
+        ) : (
+          <div className="org-logo-variants">
+            {LOGO_VARIANTS.map((v) => {
+              const hasLogo = variants.includes(v.id);
+              return (
+                <div key={v.id} className="org-logo-variant">
+                  <div className="org-logo-variant__preview" style={{ background: v.bg }}>
+                    {hasLogo ? (
+                      <img
+                        src={`/api/orgs/${slug}/logo/${v.id}?t=${imgBust}`}
+                        alt={v.label}
+                        className="org-logo-variant__img"
+                      />
+                    ) : (
+                      <div className="org-logo-variant__empty">+</div>
+                    )}
+                  </div>
+                  <div className="org-logo-variant__label">{v.label}</div>
+                  <div className="org-logo-variant__hint">{v.hint}</div>
+                  <div className="org-logo-variant__actions">
+                    <button
+                      className="btn btn--secondary"
+                      style={{ fontSize: 11, padding: "3px 10px" }}
+                      onClick={() => fileRefs.current[v.id]?.click()}
+                    >
+                      {hasLogo ? "Replace" : "+ Upload"}
+                    </button>
+                    {hasLogo && (
+                      <button
+                        className="btn btn--danger-outline"
+                        style={{ fontSize: 11, padding: "3px 8px" }}
+                        onClick={() => handleDelete(v.id)}
+                      >
+                        ✕
+                      </button>
+                    )}
+                    <input
+                      ref={(el) => { fileRefs.current[v.id] = el; }}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: "none" }}
+                      onChange={(e) => { handleUpload(v.id, e.target.files?.[0]); e.target.value = ""; }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {error && <div className="org-logo-error">{error}</div>}
+      </Card>
+
+      <Card
+        title="Apply to Catalog"
+        description="Stamp the logo onto every item image in this org. The originals stay untouched — a new copy with the overlay is saved as a separate file."
+      >
+        <div className="org-logo-apply-row">
+          <div className="org-logo-apply-info">
+            <div className="org-logo-apply-info__count">
+              {itemsWithImages} item image{itemsWithImages !== 1 ? "s" : ""} found
+            </div>
+            <div className="org-logo-apply-info__hint">
+              {variants.length === 0
+                ? "Upload at least one logo variant first"
+                : `${variants.join(", ")} variant${variants.length > 1 ? "s" : ""} available — best selected per image brightness`}
+            </div>
+          </div>
+          <button
+            className="btn btn--primary"
+            onClick={handleBulkApply}
+            disabled={applying || variants.length === 0 || itemsWithImages === 0}
+          >
+            {applying ? "Applying…" : "Apply Logo to All Images"}
+          </button>
+        </div>
+
+        {result && (
+          <div className={`org-logo-result ${result.failed?.length ? "org-logo-result--warn" : "org-logo-result--ok"}`}>
+            {result.succeeded} image{result.succeeded !== 1 ? "s" : ""} updated
+            {result.failed?.length > 0 && ` · ${result.failed.length} failed`}
+          </div>
+        )}
+      </Card>
+    </>
+  );
+}
+
 // ── Item Image Panel ──────────────────────────────────────────────────────────
 
 function ItemImagePanel({ slug, categoryName, item, onImageChange }) {
@@ -565,16 +736,149 @@ function ItemImagePanel({ slug, categoryName, item, onImageChange }) {
 
 // ── Bulk Generate Modal ───────────────────────────────────────────────────────
 
+// All AI generation models across providers
+// provider: openai | replicate | gemini
 const AI_MODELS = [
-  { id: "gpt-image-1-low",  model: "gpt-image-1", quality: "low",    label: "Fast",    cost: 0.0063, badge: "Draft quality" },
-  { id: "gpt-image-1-med",  model: "gpt-image-1", quality: "medium", label: "Standard",cost: 0.0167, badge: "Good balance" },
-  { id: "dall-e-3-hd",      model: "dall-e-3",    quality: "hd",     label: "HD",      cost: 0.25,   badge: "Best quality" },
+  // OpenAI
+  { id: "openai-draft", provider: "openai",     model: "gpt-image-1",                      quality: "low",    label: "Draft",          group: "OpenAI",        cost: 0.006,  badge: "Fast, low quality"    },
+  { id: "openai-good",  provider: "openai",     model: "gpt-image-1",                      quality: "medium", label: "Good",           group: "OpenAI",        cost: 0.017,  badge: "Balanced quality"     },
+  { id: "openai-best",  provider: "openai",     model: "gpt-image-1",                      quality: "high",   label: "Best",           group: "OpenAI",        cost: 0.25,   badge: "Highest quality"      },
+  // Flux (Replicate)
+  { id: "flux-pro",     provider: "replicate",  model: "black-forest-labs/flux-1.1-pro",   quality: null,     label: "Flux Pro",       group: "Replicate",     cost: 0.04,   badge: "Great photorealism"   },
+  { id: "flux-ultra",   provider: "replicate",  model: "black-forest-labs/flux-1.1-pro-ultra", quality: null, label: "Flux Ultra",     group: "Replicate",     cost: 0.06,   badge: "Best Flux quality"    },
+  // Nano Banana 2 (Gemini)
+  { id: "nb2-1k",       provider: "gemini",     model: "gemini-3.1-flash-image-preview",   quality: "1k",     label: "Nano Banana 2",  group: "Google",        cost: 0.067,  badge: "Subject consistency"  },
+  { id: "nb2-4k",       provider: "gemini",     model: "gemini-3.1-flash-image-preview",   quality: "4k",     label: "Nano Banana 4K", group: "Google",        cost: 0.151,  badge: "4K resolution"        },
 ];
+
+// Queue modes — web + all AI models
+const QUEUE_MODES = [
+  { id: "web", label: "🌐 Web", sub: "Free", mode: "web", provider: null, model: null, quality: null },
+  ...AI_MODELS.map((m) => ({
+    id:       m.id,
+    label:    `✨ ${m.label}`,
+    sub:      `$${m.cost}/img`,
+    mode:     "generate",
+    provider: m.provider,
+    model:    m.model,
+    quality:  m.quality,
+  })),
+];
+
+// ── Queue Panel — floating bottom-right, shows generation progress ─────────────
+
+function QueuePanel({ queue, running, onStop, onClear, onClose }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const done   = queue.filter((i) => i.status === "done").length;
+  const total  = queue.length;
+  const errors = queue.filter((i) => i.status === "error").length;
+  const pct    = total ? Math.round((done / total) * 100) : 0;
+
+  return (
+    <div className={`queue-panel ${collapsed ? "queue-panel--collapsed" : ""}`}>
+      {/* Header */}
+      <div className="queue-panel__header" onClick={() => setCollapsed((v) => !v)}>
+        <div className="queue-panel__title">
+          {running
+            ? <span className="queue-panel__spin">⟳</span>
+            : done === total ? <span style={{ color: "#16a34a" }}>✓</span> : "·"
+          }
+          <span>Image Queue</span>
+          <span className="queue-panel__badge">{done}/{total}</span>
+        </div>
+        <div className="queue-panel__header-btns" onClick={(e) => e.stopPropagation()}>
+          {running
+            ? <button className="queue-panel__btn" onClick={onStop} title="Stop after current item">⏹</button>
+            : <button className="queue-panel__btn" onClick={onClear} title="Clear queue">Clear</button>
+          }
+          <button className="queue-panel__btn" onClick={onClose} title="Hide">✕</button>
+          <span className="queue-panel__chevron">{collapsed ? "▴" : "▾"}</span>
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div className="queue-panel__prog">
+        <div className="queue-panel__prog-fill" style={{ width: `${pct}%` }} />
+      </div>
+
+      {/* Item list */}
+      {!collapsed && (
+        <div className="queue-panel__list">
+          {queue.map((item) => (
+            <div key={item.id} className={`queue-item queue-item--${item.status}`}>
+              <span className="queue-item__icon">
+                {item.status === "done"    ? "✓"
+                : item.status === "error"  ? "✗"
+                : item.status === "running" ? <span className="queue-panel__spin">⟳</span>
+                : "·"}
+              </span>
+              <div className="queue-item__info">
+                <span className="queue-item__name">{item.itemName}</span>
+                <span className="queue-item__cat">{item.categoryName}</span>
+                {item.status === "error" && (
+                  <span className="queue-item__err">{item.error}</span>
+                )}
+              </div>
+              <div className="queue-item__thumb">
+                {item.imageUrl
+                  ? <img src={`${item.imageUrl}?t=${item.ts || 0}`} alt="" />
+                  : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!running && !collapsed && errors > 0 && (
+        <div className="queue-panel__footer">{errors} failed</div>
+      )}
+    </div>
+  );
+}
+
+// ── Selection Toolbar — appears when items are selected ───────────────────────
+
+function SelectionToolbar({ count, running, onAddToQueue, onClearSelection }) {
+  const [mode, setMode] = useState("web");
+  const selectedMode = QUEUE_MODES.find((m) => m.id === mode);
+
+  return (
+    <div className="selection-toolbar">
+      <span className="selection-toolbar__count">
+        {count} item{count !== 1 ? "s" : ""} selected
+      </span>
+      <div className="selection-toolbar__modes">
+        {QUEUE_MODES.map((m) => (
+          <button
+            key={m.id}
+            className={`sel-mode-btn ${mode === m.id ? "sel-mode-btn--active" : ""}`}
+            onClick={() => setMode(m.id)}
+            title={m.sub}
+          >
+            {m.label}
+            <span className="sel-mode-btn__sub">{m.sub}</span>
+          </button>
+        ))}
+      </div>
+      <button
+        className="btn btn--primary btn--sm"
+        onClick={() => onAddToQueue(selectedMode)}
+        disabled={running}
+        title={running ? "Queue is running — wait or stop it first" : ""}
+      >
+        {running ? "Queue running…" : "Add to Queue →"}
+      </button>
+      <button className="btn btn--secondary btn--sm" onClick={onClearSelection}>
+        Clear
+      </button>
+    </div>
+  );
+}
 
 function BulkGenerateModal({ slug, cat, orgContext, onClose, onDone }) {
   const { industry, region } = orgContext || {};
   const [mode, setMode] = useState("web");
-  const [aiModelId, setAiModelId] = useState("gpt-image-1-low");
+  const [aiModelId, setAiModelId] = useState("openai-draft");
   const [overwrite, setOverwrite] = useState(false);
   const [phase, setPhase] = useState("config"); // config | running | done
 
@@ -587,6 +891,7 @@ function BulkGenerateModal({ slug, cat, orgContext, onClose, onDone }) {
   const toProcess = overwrite ? cat.items.length : (cat.items.length - existingCount);
   const aiModel = AI_MODELS.find((m) => m.id === aiModelId);
   const estimatedCost = aiModel ? `~$${(aiModel.cost * toProcess).toFixed(2)}` : null;
+  const modelGroups = AI_MODELS.reduce((acc, m) => { if (!acc[m.group]) acc[m.group] = []; acc[m.group].push(m); return acc; }, {});
 
   function patchItem(name, patch) {
     setItemStates((prev) => prev.map((s) => s.name === name ? { ...s, ...patch } : s));
@@ -604,6 +909,7 @@ function BulkGenerateModal({ slug, cat, orgContext, onClose, onDone }) {
     try {
       await bulkGenerateImages(slug, cat.name, {
         mode,
+        provider: aiModel?.provider,
         model: aiModel?.model,
         quality: aiModel?.quality,
         overwrite,
@@ -669,19 +975,26 @@ function BulkGenerateModal({ slug, cat, orgContext, onClose, onDone }) {
               </button>
             </div>
 
-            {/* AI model selector */}
+            {/* AI model selector — grouped by provider */}
             {mode === "generate" && (
-              <div className="bgi-ai-models">
-                {AI_MODELS.map((m) => (
-                  <button
-                    key={m.id}
-                    className={`bgi-ai-model ${aiModelId === m.id ? "bgi-ai-model--active" : ""}`}
-                    onClick={() => setAiModelId(m.id)}
-                  >
-                    <span className="bgi-ai-model__label">{m.label}</span>
-                    <span className="bgi-ai-model__badge">{m.badge}</span>
-                    <span className="bgi-ai-model__cost">${m.cost}/img</span>
-                  </button>
+              <div className="bgi-provider-groups">
+                {Object.entries(modelGroups).map(([group, models]) => (
+                  <div key={group} className="bgi-provider-group">
+                    <div className="bgi-provider-group__label">{group}</div>
+                    <div className="bgi-ai-models">
+                      {models.map((m) => (
+                        <button
+                          key={m.id}
+                          className={`bgi-ai-model ${aiModelId === m.id ? "bgi-ai-model--active" : ""}`}
+                          onClick={() => setAiModelId(m.id)}
+                        >
+                          <span className="bgi-ai-model__label">{m.label}</span>
+                          <span className="bgi-ai-model__badge">{m.badge}</span>
+                          <span className="bgi-ai-model__cost">${m.cost}/img</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
             )}
@@ -772,21 +1085,21 @@ function BulkGenerateModal({ slug, cat, orgContext, onClose, onDone }) {
   );
 }
 
-// ── Item Refine Modal ──────────────────────────────────────────────────────────
+// ── Item Image Editor — shared by ItemRefineModal and ItemDetailEdit ──────────
+// onDone: optional callback for "Done" button (pass onClose from the modal, or null when embedded)
 
-function ItemRefineModal({ slug, item, categoryName, orgContext, onImageChange, onClose }) {
+function ItemImageEditor({ slug, item, categoryName, orgContext, onImageChange, onDone }) {
   const { industry, region } = orgContext || {};
   const hasExistingImage = !!item.imageUrl;
 
-  // Tab: "fix" (only when image exists) or "replace"
   const [tab, setTab] = useState(hasExistingImage ? "fix" : "replace");
   const [feedback, setFeedback] = useState("");
   const [contextHint, setContextHint] = useState("");
-  const [phase, setPhase] = useState("idle"); // idle | searching | candidates | working | done
+  const [aiModelId, setAiModelId] = useState("openai-draft");
+  const [phase, setPhase] = useState("idle");
   const [candidates, setCandidates] = useState([]);
-  // The displayed image — starts at the current item image with cache-bust
   const [displaySrc, setDisplaySrc] = useState(
-    item.imageUrl ? `${item.imageUrl}?t=${Date.now()}` : null
+    item.imageUrl ? `${item.imageUrl}?t=${item.imageUpdatedAt || 0}` : null
   );
   const [error, setError] = useState(null);
 
@@ -798,9 +1111,9 @@ function ItemRefineModal({ slug, item, categoryName, orgContext, onImageChange, 
     onImageChange(url);
     setPhase("done");
     setError(null);
+    setFeedback("");
   }
 
-  // ── Fix tab ──────────────────────────────────────────────────────────────────
   async function handleFix() {
     if (!feedback.trim()) return;
     setPhase("working");
@@ -814,7 +1127,6 @@ function ItemRefineModal({ slug, item, categoryName, orgContext, onImageChange, 
     }
   }
 
-  // ── Replace tab ──────────────────────────────────────────────────────────────
   async function handleWebSearch() {
     setPhase("searching");
     setError(null);
@@ -825,7 +1137,7 @@ function ItemRefineModal({ slug, item, categoryName, orgContext, onImageChange, 
         contextHint: contextHint.trim(),
       });
       setCandidates(results);
-      setPhase("idle"); // show candidates without blocking
+      setPhase("idle");
     } catch (err) {
       setError(err.message);
       setPhase("idle");
@@ -847,9 +1159,14 @@ function ItemRefineModal({ slug, item, categoryName, orgContext, onImageChange, 
   async function handleAIGenerate() {
     setPhase("working");
     setError(null);
+    const selectedModel = AI_MODELS.find((m) => m.id === aiModelId);
     try {
       const notes = [contextHint.trim(), item.notes, item.itemInfo].filter(Boolean).join(" · ");
-      const res = await generateItemImage(slug, categoryName, item.name, notes || undefined);
+      const res = await generateItemImage(slug, categoryName, item.name, notes || undefined, {
+        provider: selectedModel?.provider,
+        model: selectedModel?.model,
+        quality: selectedModel?.quality,
+      });
       applyNewImage(res.imageUrl);
     } catch (err) {
       setError(err.message);
@@ -858,153 +1175,175 @@ function ItemRefineModal({ slug, item, categoryName, orgContext, onImageChange, 
   }
 
   return (
-    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && !busy && onClose()}>
-      <div className="modal-box modal-box--refine">
+    <div className="item-img-editor">
+      {/* Current image preview */}
+      <div className="refine-current">
+        {displaySrc
+          ? <img src={displaySrc} alt={item.name} className="refine-current__img" />
+          : <div className="refine-current__empty">No image yet</div>}
+      </div>
 
-        {/* Header */}
+      {/* Context chips */}
+      {contextPills.length > 0 && (
+        <div className="bgi-context">
+          <span className="bgi-context__label">Context:</span>
+          {contextPills.map((p) => <span key={p} className="bgi-context__chip">{p}</span>)}
+        </div>
+      )}
+
+      {/* Tabs — Fix only available when image exists */}
+      {hasExistingImage && (
+        <div className="refine-tabs">
+          <button
+            className={`refine-tab ${tab === "fix" ? "refine-tab--active" : ""}`}
+            onClick={() => { setTab("fix"); setPhase("idle"); setError(null); setCandidates([]); }}
+            disabled={busy}
+          >
+            ✏️ Fix this image
+          </button>
+          <button
+            className={`refine-tab ${tab === "replace" ? "refine-tab--active" : ""}`}
+            onClick={() => { setTab("replace"); setPhase("idle"); setError(null); setCandidates([]); }}
+            disabled={busy}
+          >
+            🔄 Replace
+          </button>
+        </div>
+      )}
+
+      {error && <div className="img-cat-card__error">{error}</div>}
+
+      {/* ── Fix tab ── */}
+      {tab === "fix" && (
+        <>
+          <div className="refine-hint">
+            <label className="refine-hint__label">What's wrong with this image?</label>
+            <textarea
+              className="settings-textarea"
+              rows={3}
+              placeholder={"e.g. \"The technician has 3 hands — fix the anatomy\"\n\"Make it residential, not commercial\"\n\"Lighting is too dark, make it bright and sunny\""}
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              disabled={busy}
+            />
+          </div>
+          <div className="refine-actions">
+            {phase === "working"
+              ? <div className="refine-status" style={{ flex: 1 }}>Editing image with AI…</div>
+              : (
+                <button
+                  className="btn btn--primary"
+                  style={{ flex: 1 }}
+                  onClick={handleFix}
+                  disabled={!feedback.trim() || busy}
+                >
+                  🔧 Fix with AI
+                </button>
+              )
+            }
+            {phase === "done" && onDone && (
+              <button className="btn btn--secondary" onClick={onDone}>Done</button>
+            )}
+            {phase === "done" && !onDone && (
+              <button className="btn btn--secondary" onClick={() => { setPhase("idle"); setTab("fix"); }}>
+                Fix again
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ── Replace tab ── */}
+      {tab === "replace" && (
+        <>
+          <div className="refine-hint">
+            <label className="refine-hint__label">
+              Extra detail <span className="refine-hint__optional">optional</span>
+            </label>
+            <input
+              className="settings-input"
+              placeholder={`e.g. "rooftop unit", "crawl space liner", "residential attic"`}
+              value={contextHint}
+              onChange={(e) => setContextHint(e.target.value)}
+              disabled={busy}
+              onKeyDown={(e) => e.key === "Enter" && !busy && handleWebSearch()}
+            />
+          </div>
+
+          {candidates.length > 0 && (
+            <div className="refine-candidates">
+              {candidates.map((c, i) => (
+                <button key={i} className="refine-candidate" onClick={() => handleSelectCandidate(c)} disabled={busy}>
+                  <img src={c.thumbUrl} alt={`Option ${i + 1}`} className="refine-candidate__img" />
+                  <span className="refine-candidate__domain">{c.domain}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {phase === "searching" && <div className="refine-status">Searching web…</div>}
+          {phase === "working"   && <div className="refine-status">Generating image…</div>}
+
+          {/* AI model selector */}
+          {phase !== "working" && (
+            <div className="refine-model-picker">
+              {AI_MODELS.map((m) => (
+                <button
+                  key={m.id}
+                  className={`refine-model-btn ${aiModelId === m.id ? "refine-model-btn--active" : ""}`}
+                  onClick={() => setAiModelId(m.id)}
+                  disabled={busy}
+                  title={m.badge}
+                >
+                  <span>{m.label}</span>
+                  <span className="refine-model-btn__cost">${m.cost}/img</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="refine-actions">
+            {phase !== "working" && (
+              <>
+                <button className="btn btn--secondary" style={{ flex: 1 }} onClick={handleWebSearch} disabled={busy}>
+                  🌐 {candidates.length > 0 ? "Search again" : "Web Search"}
+                </button>
+                <button className="btn btn--primary" style={{ flex: 1 }} onClick={handleAIGenerate} disabled={busy}>
+                  ✨ AI Generate
+                </button>
+              </>
+            )}
+            {phase === "done" && onDone && (
+              <button className="btn btn--secondary" onClick={onDone} style={{ width: "100%" }}>Done</button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Item Refine Modal — modal wrapper around ItemImageEditor ──────────────────
+
+function ItemRefineModal({ slug, item, categoryName, orgContext, onImageChange, onClose }) {
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal-box modal-box--refine">
         <div className="modal-box__header">
           <div>
             <div className="bgi-header__eyebrow">Image</div>
             <h3 className="bgi-header__title" style={{ fontSize: 15 }}>{item.name}</h3>
           </div>
-          {!busy && <button className="modal-box__close" onClick={onClose}>✕</button>}
+          <button className="modal-box__close" onClick={onClose}>✕</button>
         </div>
-
-        {/* Current image */}
-        <div className="refine-current">
-          {displaySrc
-            ? <img src={displaySrc} alt={item.name} className="refine-current__img" />
-            : <div className="refine-current__empty">No image yet</div>}
-        </div>
-
-        {/* Context chips */}
-        {contextPills.length > 0 && (
-          <div className="bgi-context">
-            <span className="bgi-context__label">Context:</span>
-            {contextPills.map((p) => <span key={p} className="bgi-context__chip">{p}</span>)}
-          </div>
-        )}
-
-        {/* Tabs — only show Fix tab when there's an existing image */}
-        {hasExistingImage && (
-          <div className="refine-tabs">
-            <button
-              className={`refine-tab ${tab === "fix" ? "refine-tab--active" : ""}`}
-              onClick={() => { setTab("fix"); setPhase("idle"); setError(null); setCandidates([]); }}
-              disabled={busy}
-            >
-              ✏️ Fix this image
-            </button>
-            <button
-              className={`refine-tab ${tab === "replace" ? "refine-tab--active" : ""}`}
-              onClick={() => { setTab("replace"); setPhase("idle"); setError(null); setCandidates([]); }}
-              disabled={busy}
-            >
-              🔄 Replace
-            </button>
-          </div>
-        )}
-
-        {error && <div className="img-cat-card__error">{error}</div>}
-
-        {/* ── Fix tab ── */}
-        {tab === "fix" && (
-          <>
-            <div className="refine-hint">
-              <label className="refine-hint__label">
-                What's wrong with this image?
-              </label>
-              <textarea
-                className="settings-textarea"
-                rows={3}
-                placeholder={"e.g. \"The technician has 3 hands — fix the anatomy\"\n\"The house looks like a commercial building, make it residential\"\n\"The lighting is too dark, make it bright and sunny\""}
-                value={feedback}
-                onChange={(e) => setFeedback(e.target.value)}
-                disabled={busy}
-              />
-            </div>
-            <div className="refine-actions">
-              {phase === "working"
-                ? <div className="refine-status" style={{ flex: 1 }}>Editing image with AI…</div>
-                : (
-                  <button
-                    className="btn btn--primary"
-                    style={{ flex: 1 }}
-                    onClick={handleFix}
-                    disabled={!feedback.trim() || busy}
-                  >
-                    🔧 Fix with AI
-                  </button>
-                )
-              }
-              {phase === "done" && (
-                <button className="btn btn--secondary" onClick={onClose}>Done</button>
-              )}
-            </div>
-          </>
-        )}
-
-        {/* ── Replace tab ── */}
-        {tab === "replace" && (
-          <>
-            <div className="refine-hint">
-              <label className="refine-hint__label">
-                Extra detail <span className="refine-hint__optional">optional</span>
-              </label>
-              <input
-                className="settings-input"
-                placeholder={`e.g. "rooftop unit", "crawl space liner", "residential attic"`}
-                value={contextHint}
-                onChange={(e) => setContextHint(e.target.value)}
-                disabled={busy}
-                onKeyDown={(e) => e.key === "Enter" && !busy && handleWebSearch()}
-              />
-            </div>
-
-            {/* Candidates grid */}
-            {candidates.length > 0 && (
-              <div className="refine-candidates">
-                {candidates.map((c, i) => (
-                  <button key={i} className="refine-candidate" onClick={() => handleSelectCandidate(c)} disabled={busy}>
-                    <img src={c.thumbUrl} alt={`Option ${i + 1}`} className="refine-candidate__img" />
-                    <span className="refine-candidate__domain">{c.domain}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {phase === "searching" && <div className="refine-status">Searching web…</div>}
-            {phase === "working"   && <div className="refine-status">Saving image…</div>}
-
-            <div className="refine-actions">
-              {phase !== "working" && (
-                <>
-                  <button
-                    className="btn btn--secondary"
-                    style={{ flex: 1 }}
-                    onClick={handleWebSearch}
-                    disabled={busy}
-                  >
-                    🌐 {candidates.length > 0 ? "Search again" : "Web Search"}
-                  </button>
-                  <button
-                    className="btn btn--primary"
-                    style={{ flex: 1 }}
-                    onClick={handleAIGenerate}
-                    disabled={busy}
-                  >
-                    ✨ AI Generate
-                  </button>
-                </>
-              )}
-              {phase === "done" && (
-                <button className="btn btn--secondary" onClick={onClose} style={{ width: "100%" }}>
-                  Done
-                </button>
-              )}
-            </div>
-          </>
-        )}
+        <ItemImageEditor
+          slug={slug}
+          item={item}
+          categoryName={categoryName}
+          orgContext={orgContext}
+          onImageChange={onImageChange}
+          onDone={onClose}
+        />
       </div>
     </div>
   );
@@ -1012,7 +1351,7 @@ function ItemRefineModal({ slug, item, categoryName, orgContext, onImageChange, 
 
 // ── Price Book Panel ──────────────────────────────────────────────────────────
 
-function ItemDetailEdit({ slug, item, categoryName, factors, additionalCosts, onUpdate, onClose }) {
+function ItemDetailEdit({ slug, item, categoryName, orgContext, factors, additionalCosts, onUpdate, onClose }) {
   const [form, setForm] = useState({ ...item });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const toggleName = (key, name) => {
@@ -1116,13 +1455,14 @@ function ItemDetailEdit({ slug, item, categoryName, factors, additionalCosts, on
             </Field>
           </div>
 
-          {/* Right — image */}
+          {/* Right — image editor (same as standalone modal) */}
           <div className="item-detail-box__right">
-            <ItemImagePanel
+            <ItemImageEditor
               slug={slug}
-              categoryName={categoryName}
               item={form}
-              onImageChange={(url) => set("imageUrl", url)}
+              categoryName={categoryName}
+              orgContext={orgContext}
+              onImageChange={(url) => setForm((f) => ({ ...f, imageUrl: url, imageUpdatedAt: Date.now() }))}
             />
           </div>
         </div>
@@ -1136,25 +1476,25 @@ function ItemDetailEdit({ slug, item, categoryName, factors, additionalCosts, on
   );
 }
 
-function ItemRow({ slug, item, categoryName, orgContext, factors, additionalCosts, onUpdate, onDelete }) {
+function ItemRow({ slug, item, categoryName, orgContext, factors, additionalCosts, selected, onToggleSelect, onUpdate, onDelete }) {
   const [showDetail, setShowDetail] = useState(false);
   const [showRefine, setShowRefine] = useState(false);
-  // Cache-bust: tracks a local timestamp appended to the img src so the browser
-  // reloads the file after a regeneration (same URL, new content on disk).
-  const [cacheBust, setCacheBust] = useState(null);
 
   function handleImageChange(url) {
-    setCacheBust(Date.now());
-    onUpdate({ ...item, imageUrl: url });
+    onUpdate({ ...item, imageUrl: url, imageUpdatedAt: Date.now() });
   }
 
   const thumbSrc = item.imageUrl
-    ? `${item.imageUrl}${cacheBust ? `?t=${cacheBust}` : ''}`
+    ? `${item.imageUrl}?t=${item.imageUpdatedAt || 0}`
     : null;
 
   return (
     <>
-      <div className="pb-item-row">
+      <div className={`pb-item-row ${selected ? "pb-item-row--selected" : ""}`}>
+        {/* Selection checkbox */}
+        <label className="pb-item-row__check" onClick={(e) => e.stopPropagation()}>
+          <input type="checkbox" checked={!!selected} onChange={onToggleSelect} />
+        </label>
         <div className="pb-item-row__left">
           {/* Thumbnail — click to refine */}
           <button className="pb-item-row__thumb-btn" onClick={() => setShowRefine(true)} title="Refine image">
@@ -1180,6 +1520,7 @@ function ItemRow({ slug, item, categoryName, orgContext, factors, additionalCost
           slug={slug}
           item={item}
           categoryName={categoryName}
+          orgContext={orgContext}
           factors={factors}
           additionalCosts={additionalCosts}
           onUpdate={onUpdate}
@@ -1237,7 +1578,7 @@ function AddItemForm({ onAdd, onCancel }) {
   );
 }
 
-function CategoryBlock({ slug, cat, catIndex, orgContext, factors, additionalCosts, onUpdateCat, onDeleteCat }) {
+function CategoryBlock({ slug, cat, catIndex, orgContext, factors, additionalCosts, selectedItems, onToggleSelect, onUpdateCat, onDeleteCat }) {
   const [expanded, setExpanded] = useState(false);
   const [addingItem, setAddingItem] = useState(false);
   const [editingName, setEditingName] = useState(false);
@@ -1258,6 +1599,20 @@ function CategoryBlock({ slug, cat, catIndex, orgContext, factors, additionalCos
   const addItem = (item) => { onUpdateCat({ ...cat, items: [...cat.items, item] }); setAddingItem(false); };
 
   const imagesCount = cat.items.filter((i) => i.imageUrl).length;
+  const selectedInCat = cat.items.filter((item) => selectedItems?.has(`${cat.name}|||${item.name}`)).length;
+  const allSelectedInCat = selectedInCat === cat.items.length;
+
+  function handleToggleAllInCat(e) {
+    e.stopPropagation();
+    cat.items.forEach((item) => {
+      const key = `${cat.name}|||${item.name}`;
+      const isSelected = selectedItems?.has(key);
+      if (allSelectedInCat ? isSelected : !isSelected) {
+        onToggleSelect(cat.name, item.name);
+      }
+    });
+  }
+
   const toggleFactor = (factorName) => {
     const current = cat.factorNames || [];
     onUpdateCat({
@@ -1289,8 +1644,13 @@ function CategoryBlock({ slug, cat, catIndex, orgContext, factors, additionalCos
           )}
           <span className="pb-category__count">{cat.items.length} items</span>
           {imagesCount > 0 && <span className="pb-category__count" style={{ background: "#d1fae5", color: "#065f46" }}>{imagesCount} images</span>}
+          {selectedInCat > 0 && <span className="pb-category__count" style={{ background: "#dbeafe", color: "#1d4ed8" }}>{selectedInCat} selected</span>}
         </div>
         <div className="pb-category__actions" onClick={(e) => e.stopPropagation()}>
+          {/* Select all in category */}
+          <label className="pb-cat-check" title={allSelectedInCat ? "Deselect all" : "Select all"} onClick={(e) => e.stopPropagation()}>
+            <input type="checkbox" checked={allSelectedInCat && cat.items.length > 0} ref={(el) => { if (el) el.indeterminate = selectedInCat > 0 && !allSelectedInCat; }} onChange={handleToggleAllInCat} />
+          </label>
           <button className="pb-btn-icon" title="Queue category images" onClick={() => { setExpanded(true); setBulkModal(true); }}>✨</button>
           <button className="pb-btn-icon" onClick={() => { setEditingName(true); setExpanded(true); }} title="Rename">✎</button>
           <button className="pb-btn-icon pb-btn-icon--danger" onClick={() => onDeleteCat(catIndex)} title="Delete category">✕</button>
@@ -1321,6 +1681,8 @@ function CategoryBlock({ slug, cat, catIndex, orgContext, factors, additionalCos
               orgContext={orgContext}
               factors={factors}
               additionalCosts={additionalCosts}
+              selected={!!selectedItems?.has(`${cat.name}|||${item.name}`)}
+              onToggleSelect={() => onToggleSelect?.(cat.name, item.name)}
               onUpdate={(updated) => updateItem(itemIdx, updated)}
               onDelete={() => deleteItem(itemIdx)}
             />
@@ -1338,9 +1700,10 @@ function CategoryBlock({ slug, cat, catIndex, orgContext, factors, additionalCos
           orgContext={orgContext}
           onClose={() => setBulkModal(false)}
           onDone={(results) => {
+            const now = Date.now();
             const updatedItems = cat.items.map((item) => {
               const r = results.find((r) => r.itemName === item.name && r.success && r.imageUrl);
-              return r ? { ...item, imageUrl: r.imageUrl, imageSource: r.imageSource || item.imageSource, sourceUrl: r.sourceUrl || item.sourceUrl } : item;
+              return r ? { ...item, imageUrl: r.imageUrl, imageUpdatedAt: now, imageSource: r.imageSource || item.imageSource, sourceUrl: r.sourceUrl || item.sourceUrl } : item;
             });
             onUpdateCat({ ...cat, items: updatedItems });
             setBulkModal(false);
@@ -1359,6 +1722,92 @@ function PriceBookPanel({ org, onSaved }) {
   const [status, setStatus] = useState(null);
   const [addingCat, setAddingCat] = useState(false);
   const [newCatName, setNewCatName] = useState("");
+
+  // ── Bulk selection ───────────────────────────────────────────────────────────
+  const [selectedItems, setSelectedItems] = useState(new Set()); // "catName|||itemName"
+
+  function toggleSelectItem(categoryName, itemName) {
+    const key = `${categoryName}|||${itemName}`;
+    setSelectedItems((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }
+
+  // ── Image queue ──────────────────────────────────────────────────────────────
+  const [queue, setQueue] = useState([]);        // [{id, categoryName, itemName, notes, status, imageUrl, error, ts}]
+  const [queueRunning, setQueueRunning] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
+  const queueAbortRef = useRef(false);
+
+  function updateItemInCategories(categoryName, itemName, patch) {
+    setCategories((cats) => cats.map((cat) =>
+      cat.name !== categoryName ? cat : {
+        ...cat,
+        items: cat.items.map((item) =>
+          item.name !== itemName ? item : { ...item, ...patch }
+        ),
+      }
+    ));
+    setDirty(true);
+  }
+
+  async function processQueue(newItems, mode) {
+    setQueueRunning(true);
+    queueAbortRef.current = false;
+
+    for (const qItem of newItems) {
+      if (queueAbortRef.current) break;
+      setQueue((q) => q.map((i) => i.id === qItem.id ? { ...i, status: "running" } : i));
+
+      try {
+        let imageUrl;
+        if (mode.mode === "web") {
+          const candidates = await fetchItemCandidates(org.slug, qItem.categoryName, qItem.itemName, { count: 1 });
+          if (!candidates.length) throw new Error("No web candidates found");
+          const res = await selectItemImage(org.slug, qItem.categoryName, qItem.itemName, candidates[0].url, candidates[0].thumbUrl);
+          imageUrl = res.imageUrl;
+        } else {
+          const res = await generateItemImage(org.slug, qItem.categoryName, qItem.itemName, qItem.notes, {
+            provider: mode.provider,
+            model: mode.model,
+            quality: mode.quality,
+          });
+          imageUrl = res.imageUrl;
+        }
+        const ts = Date.now();
+        setQueue((q) => q.map((i) => i.id === qItem.id ? { ...i, status: "done", imageUrl, ts } : i));
+        updateItemInCategories(qItem.categoryName, qItem.itemName, { imageUrl, imageUpdatedAt: ts });
+      } catch (err) {
+        setQueue((q) => q.map((i) => i.id === qItem.id ? { ...i, status: "error", error: err.message } : i));
+      }
+    }
+    setQueueRunning(false);
+  }
+
+  function handleAddToQueue(mode) {
+    const newItems = [...selectedItems].map((key) => {
+      const [categoryName, itemName] = key.split("|||");
+      const cat = categories.find((c) => c.name === categoryName);
+      const item = cat?.items.find((i) => i.name === itemName);
+      return {
+        id: `${key}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        categoryName,
+        itemName,
+        notes: item?.notes || item?.itemInfo || "",
+        status: "pending",
+        imageUrl: null,
+        error: null,
+        ts: null,
+      };
+    });
+
+    setQueue((q) => [...q, ...newItems]);
+    setSelectedItems(new Set());
+    setShowQueue(true);
+    processQueue(newItems, mode);
+  }
 
   const markDirty = useCallback((cats) => { setCategories(cats); setDirty(true); setStatus(null); }, []);
 
@@ -1403,6 +1852,7 @@ function PriceBookPanel({ org, onSaved }) {
 
   const totalItems = categories.reduce((s, c) => s + c.items.length, 0);
   const totalImages = categories.reduce((s, c) => s + c.items.filter((i) => i.imageUrl).length, 0);
+  const selectedCount = selectedItems.size;
 
   return (
     <>
@@ -1410,9 +1860,19 @@ function PriceBookPanel({ org, onSaved }) {
         <h2 className="settings-header__title">Price Book</h2>
         <p className="settings-header__desc">
           {categories.length} categories · {totalItems} items · {totalImages} images.
-          {" "}Click ✨ on a category to queue AI generation or web image selection.
+          {" "}Check items to bulk generate images, or click ✨ per category.
         </p>
       </div>
+
+      {/* Selection toolbar — shown when at least one item is checked */}
+      {selectedCount > 0 && (
+        <SelectionToolbar
+          count={selectedCount}
+          running={queueRunning}
+          onAddToQueue={handleAddToQueue}
+          onClearSelection={() => setSelectedItems(new Set())}
+        />
+      )}
 
       <div className="pb-categories">
         {categories.map((cat, idx) => (
@@ -1424,6 +1884,8 @@ function PriceBookPanel({ org, onSaved }) {
             orgContext={{ industry: org.industry, region: org.region }}
             factors={org.resources?.factors || []}
             additionalCosts={org.resources?.additionalCosts || []}
+            selectedItems={selectedItems}
+            onToggleSelect={toggleSelectItem}
             onUpdateCat={(updated) => updateCat(idx, updated)}
             onDeleteCat={deleteCat}
           />
@@ -1440,6 +1902,27 @@ function PriceBookPanel({ org, onSaved }) {
       </div>
 
       <SaveBar dirty={dirty} saving={saving} status={status} onSave={handleSave} onDiscard={() => { setCategories(org.resources?.categories || []); setWorkAreas(org.resources?.workAreas || []); setDirty(false); setStatus(null); }} />
+
+      {/* Floating queue panel — shown while queue has items */}
+      {showQueue && queue.length > 0 && (
+        <QueuePanel
+          queue={queue}
+          running={queueRunning}
+          onStop={() => { queueAbortRef.current = true; }}
+          onClear={() => { setQueue([]); setShowQueue(false); }}
+          onClose={() => setShowQueue(false)}
+        />
+      )}
+
+      {/* Re-open queue button when hidden but still running */}
+      {!showQueue && queue.length > 0 && (
+        <button
+          className="queue-reopen-btn"
+          onClick={() => setShowQueue(true)}
+        >
+          {queueRunning ? "⟳" : "✓"} Queue ({queue.filter((i) => i.status === "done").length}/{queue.length})
+        </button>
+      )}
     </>
   );
 }
@@ -1678,6 +2161,7 @@ const NAV = [
     items: [
       { id: "organization", label: "Organization", icon: "⊞" },
       { id: "image-style", label: "Image Style", icon: "🎨" },
+      { id: "logo", label: "Logo", icon: "◈" },
     ],
   },
   {
@@ -1733,6 +2217,7 @@ export default function OrgSettingsPage() {
     switch (activeSection) {
       case "organization":      return <OrganizationPanel org={org} onSaved={handleSaved} />;
       case "image-style":       return <ImageStylePanel org={org} onSaved={handleSaved} />;
+      case "logo":              return <LogoPanel org={org} />;
       case "branch-config":     return <BranchConfigPanel org={org} onSaved={handleSaved} />;
       case "financing-terms":   return <FinancingTermsPanel org={org} onSaved={handleSaved} />;
       case "proposal-content":  return <ProposalContentPanel org={org} onSaved={handleSaved} />;

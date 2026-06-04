@@ -45,11 +45,17 @@ export function deleteItemImage(slug, categoryName, itemName) {
   }).then((r) => r.json()).then((j) => { if (!j.success) throw new Error(j.error); return j; });
 }
 
-export function generateItemImage(slug, categoryName, itemName, notes) {
+export function getImageProviders() {
+  return fetch('/api/orgs/image-providers')
+    .then((r) => r.json())
+    .then((j) => { if (!j.success) throw new Error(j.error); return j.data; });
+}
+
+export function generateItemImage(slug, categoryName, itemName, notes, { provider, model, quality } = {}) {
   return fetch(`/api/orgs/${slug}/resources/item-image/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ categoryName, itemName, notes }),
+    body: JSON.stringify({ categoryName, itemName, notes, provider, model, quality }),
   }).then((r) => r.json()).then((j) => { if (!j.success) throw new Error(j.error); return j; });
 }
 
@@ -83,12 +89,38 @@ export function selectItemImage(slug, categoryName, itemName, imageUrl, thumbUrl
   }).then((r) => r.json()).then((j) => { if (!j.success) throw new Error(j.error); return j; });
 }
 
-export function bulkGenerateImages(slug, categoryName, { mode = 'generate', model, quality, overwrite = false, onProgress = () => {}, onDone = () => {} } = {}) {
+export function listOrgLogos(slug) {
+  return fetch(`/api/orgs/${slug}/logo`)
+    .then((r) => r.json())
+    .then((j) => { if (!j.success) throw new Error(j.error); return j.data; });
+}
+
+export function uploadOrgLogo(slug, variant, file) {
+  const form = new FormData();
+  form.append('logo', file);
+  return fetch(`/api/orgs/${slug}/logo/${variant}`, { method: 'POST', body: form })
+    .then((r) => r.json())
+    .then((j) => { if (!j.success) throw new Error(j.error); return j; });
+}
+
+export function deleteOrgLogo(slug, variant) {
+  return fetch(`/api/orgs/${slug}/logo/${variant}`, { method: 'DELETE' })
+    .then((r) => r.json())
+    .then((j) => { if (!j.success) throw new Error(j.error); return j; });
+}
+
+export function bulkApplyOrgLogo(slug) {
+  return fetch(`/api/orgs/${slug}/bulk-logo-apply`, { method: 'POST' })
+    .then((r) => r.json())
+    .then((j) => { if (!j.success) throw new Error(j.error); return j.data; });
+}
+
+export function bulkGenerateImages(slug, categoryName, { mode = 'generate', provider, model, quality, overwrite = false, onProgress = () => {}, onDone = () => {} } = {}) {
   return new Promise((resolve, reject) => {
     fetch(`/api/orgs/${slug}/resources/bulk-generate-images`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ categoryName, mode, model, quality, overwrite }),
+      body: JSON.stringify({ categoryName, mode, provider, model, quality, overwrite }),
     }).then(async (res) => {
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));

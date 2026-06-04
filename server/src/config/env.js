@@ -36,6 +36,10 @@ const env = {
 
   // Anthropic Claude (vision scoring + enrichment)
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || "",
+
+  // Image generation providers
+  REPLICATE_API_KEY: process.env.REPLICATE_API_KEY || "",   // replicate.com
+  GEMINI_API_KEY:    process.env.GEMINI_API_KEY    || "",   // aistudio.google.com
 };
 
 env.MAX_FILE_SIZE_BYTES = env.MAX_FILE_SIZE_MB * 1024 * 1024;

@@ -8,12 +8,34 @@ import OpenAI from 'openai';
 import { listOrgs, getOrg, saveOrg, updateOrg, deleteOrg, updateDeploymentLog } from '../services/orgStorageService.js';
 import { deployOrg, preflightOrgDeployment } from '../services/deploymentService.js';
 import { downloadImage, findBestImage, findImageCandidates } from '../services/imageSearchService.js';
+import { generateImage, getAvailableProviders } from '../services/imageProviders.js';
 import env from '../config/env.js';
 import logger from '../utils/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ORGS_DIR = path.resolve(__dirname, '../generated-orgs');
+const ORG_LOGOS_DIR = path.resolve(__dirname, '../org-logos');
 const mediaUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+
+// ── Org logo helpers ──────────────────────────────────────────────────────────
+
+function orgLogoDir(slug) {
+  return path.join(ORG_LOGOS_DIR, slug);
+}
+
+function orgLogoPath(slug, variant) {
+  return path.join(orgLogoDir(slug), `${variant}.png`);
+}
+
+async function processOrgLogo(buffer) {
+  const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const { width, height, channels } = info;
+  for (let i = 0; i < data.length; i += channels) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    if (r > 240 && g > 240 && b > 240) data[i + 3] = 0;
+  }
+  return sharp(data, { raw: { width, height, channels } }).png().toBuffer();
+}
 
 const router = Router();
 
@@ -46,43 +68,151 @@ function deepUpdateItem(org, categoryName, itemName, patch) {
 }
 
 /**
- * Build a detailed, context-rich prompt for AI image generation.
- * Uses imageStyle (home + technician descriptions) to create visual continuity
- * across all images for the same org — same house, same technician look.
+ * GPT-4o generates a precise image prompt based on org context.
+ * Works for any industry — no pattern matching needed.
+ * Falls back to the static builder if the API call fails.
+ */
+// Provider-specific prompt formatting — each model has different sweet spots
+const PROVIDER_PROMPT_GUIDE = {
+  openai: `Write a detailed 2–3 sentence prompt in present tense.
+- Open with exactly what the technician is doing and what tools they hold
+- Specify the correct location (attic, rooftop, under sink, exterior wall, etc.) based on the service
+- Reference the described property and technician appearance for visual consistency
+- End with: photorealistic, no text, no logos, no watermarks`,
+
+  replicate: `Write a SHORT, punchy 1–2 sentence prompt for Flux. Flux responds best to concise direct descriptions, not instructions.
+Format: [Action + specific tools] at [precise location + brief property detail]. [Technician look in 5-8 words].
+Then append comma-separated style tags on a new line: photorealistic, sharp focus, natural light, professional, no text, no logos
+Keep everything under 100 words total.`,
+
+  gemini: `Write a detailed 2–3 sentence prompt in present tense for Nano Banana 2 (Google Gemini).
+- Open with exactly what the technician is doing and what tools they hold
+- Specify the correct location (attic, rooftop, under sink, exterior wall, etc.) based on the service
+- Describe the technician appearance and property in full detail — Nano Banana 2 uses these for subject consistency across the catalog
+- End with: photorealistic, consistent character, no text, no logos, no watermarks`,
+};
+
+async function buildSmartImagePrompt(openai, itemName, categoryName, notes, org, imageStyle = {}, provider = 'openai') {
+  const { home, technician, styleNotes } = imageStyle || {};
+  const formatGuide = PROVIDER_PROMPT_GUIDE[provider] || PROVIDER_PROMPT_GUIDE.openai;
+
+  const providerLabel = {
+    openai: 'gpt-image-1 (OpenAI)',
+    replicate: 'Flux 1.1 Pro (Replicate)',
+    gemini: 'Nano Banana 2 (Google Gemini)',
+  }[provider] || provider;
+
+  const systemPrompt = `You are an expert at writing image generation prompts for professional contractor service catalog photos.
+Write prompts that produce photorealistic images showing exactly what the service looks like when a real technician performs it.
+Output ONLY the prompt — no explanation, no quotes, no preamble.`;
+
+  const userMessage = [
+    `Target model: ${providerLabel}`,
+    '',
+    `Contractor industry: ${org.industry || 'home services'}`,
+    org.region ? `Region: ${org.region}` : '',
+    `Service: "${itemName}"`,
+    `Category: "${categoryName}"`,
+    notes ? `What this service involves: ${notes.replace(/\n+/g, ' ').trim().slice(0, 350)}` : '',
+    '',
+    'Visual style — maintain across ALL images for this company:',
+    home       ? `Property: ${home}`        : 'Property: typical residential home.',
+    technician ? `Technician: ${technician}` : '',
+    styleNotes ? `Style: ${styleNotes}`      : '',
+    '',
+    'Instructions:',
+    formatGuide,
+  ].filter(Boolean).join('\n');
+
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4o',
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage },
+    ],
+    max_tokens: 250,
+    temperature: 0.6,
+  });
+
+  return response.choices[0].message.content.trim();
+}
+
+/**
+ * Static fallback prompt builder — used if GPT-4o call fails.
  */
 function buildImagePrompt(itemName, categoryName, notes, industry, imageStyle = {}) {
   const { home, technician, styleNotes } = imageStyle || {};
   const combined = `${itemName} ${categoryName} ${notes || ''}`.toLowerCase();
 
-  // ── Classify scene type from item/category/notes keywords ─────────────────
-  const inAttic    = /attic/.test(combined);
-  const inCrawl    = /crawl[\s-]?space|encapsulat|vapor\s*barrier/.test(combined);
-  const isEquip    = /\b(unit|system|pump|furnace|ac\b|hvac|compressor|air\s*handler|coil|condenser)\b/.test(combined);
-  const isInstall  = /\b(install|replac|retrofit|mount|hang|set\s*up|swap|change[\s-]?out)\b/.test(combined);
-  const isInspect  = /\b(inspect|assess|test|diagnos|evaluat|audit|survey)\b/.test(combined);
-  const isCleaning = /\b(clean|flush|purge|sanitize|wash|remov)\b/.test(combined);
-  const isInsul    = /\b(insulat|blow|batts|r[\s-]?\d+|cellulose|fiberglass|spray\s*foam)\b/.test(combined);
-  const isDuct     = /\b(duct|venting|register|diffuser|plenum)\b/.test(combined);
+  // ── Scene classifiers — ordered most-specific first ────────────────────────
+  const inAttic       = /attic/.test(combined);
+  const inCrawl       = /crawl[\s-]?space/.test(combined);
+  const isEncapsulate = /encapsulat|vapor\s*barrier|liner/.test(combined);
+  const isInsul       = /\b(insulat|blown?[\s-]in|batts|r[\s-]?\d+|cellulose|fiberglass|rockwool)\b/.test(combined);
+  const isSprayFoam   = /spray[\s-]?foam|air[\s-]?seal/.test(combined);
+  const isMesh        = /\b(mesh|hardware\s*cloth|galv|screen|wire\s*cloth)\b/.test(combined);
+  const isSeal        = /\b(seal|caulk|gap|crack|penetrat|exclusion|rodent|pest|entry\s*point)\b/.test(combined);
+  const isRodent      = /\b(rodent|mice|rat|pest|vermin|wildlife)\b/.test(combined);
+  const isFogging     = /\b(fog|mist|spray|treatment|sanitiz|disinfect|deodor|enzym|botanical)\b/.test(combined);
+  const isRemoval     = /\b(remov|haul|demo|strip|pull[\s-]?out|clear|debris|old\s*insul)\b/.test(combined);
+  const isEquip       = /\b(unit|system|pump|furnace|ac\b|hvac|compressor|air\s*handler|coil|condenser|heat\s*pump)\b/.test(combined);
+  const isInstall     = /\b(install|replac|retrofit|mount|hang|set\s*up|swap|change[\s-]?out|new)\b/.test(combined);
+  const isInspect     = /\b(inspect|assess|test|diagnos|evaluat|audit|survey|check)\b/.test(combined);
+  const isCleaning    = /\b(clean|flush|purge|wash|vacuum|sanit)\b/.test(combined);
+  const isDuct        = /\b(duct|venting|register|diffuser|plenum|duct[\s-]?work)\b/.test(combined);
+  const isBarrier     = /\b(radiant\s*barrier|foil|reflective|staple)\b/.test(combined);
+  const isElectric    = /\b(electric|wiring|outlet|panel|circuit|breaker)\b/.test(combined);
 
-  // ── Scene opening ──────────────────────────────────────────────────────────
+  // ── Scene description — be specific about the ACTION and TOOLS ─────────────
   let scene;
-  if (inAttic && isInsul) {
-    scene = `A technician is blowing or installing insulation inside a residential attic — ${itemName}`;
+
+  if (isRodent && isMesh) {
+    scene = `A technician cuts and staples 1/4-inch galvanized wire mesh hardware cloth over a foundation vent opening or gap in the exterior wall to seal rodent entry points. The technician uses wire cutters and a staple gun to firmly secure the mesh. Service: ${itemName}.`;
+  } else if (isSeal && isMesh) {
+    scene = `A technician installs galvanized wire mesh over exterior openings and vents to prevent pest entry. Cutting and securing mesh with fasteners. Service: ${itemName}.`;
+  } else if (isSeal && isSprayFoam) {
+    scene = `A technician applies spray foam sealant into gaps and cracks around pipes, wires, and penetrations in the wall or floor to create an airtight seal. Service: ${itemName}.`;
+  } else if (isSeal || isRodent) {
+    scene = `A technician seals gaps and entry points using appropriate materials (caulk, foam, mesh) around the exterior of the home. Service: ${itemName}.`;
+  } else if (inAttic && isRemoval) {
+    scene = `A technician inside a residential attic removing old contaminated insulation with an industrial vacuum hose and bagging debris. Service: ${itemName}.`;
+  } else if (inAttic && isInsul) {
+    scene = `A technician inside a residential attic blowing in insulation using a blower hose, covering the attic floor joists evenly. Service: ${itemName}.`;
+  } else if (inAttic && isSprayFoam) {
+    scene = `A technician inside a residential attic applying spray foam to seal air leaks around penetrations, wires, and ducts before insulating. Service: ${itemName}.`;
+  } else if (inAttic && isBarrier) {
+    scene = `A technician inside a residential attic stapling radiant barrier foil to the rafters, reflecting heat away from the living space below. Service: ${itemName}.`;
+  } else if (inAttic && isFogging) {
+    scene = `A technician inside a residential attic using a fogging machine to apply disinfectant or deodorizing treatment throughout the space. Service: ${itemName}.`;
+  } else if (inAttic && isCleaning) {
+    scene = `A technician inside a residential attic using a HEPA vacuum to clean surfaces and remove dust, debris, and contaminants. Service: ${itemName}.`;
   } else if (inAttic) {
-    scene = `A technician is working inside a residential attic — ${itemName}`;
+    scene = `A technician working inside a residential attic performing ${itemName}.`;
+  } else if (inCrawl && isEncapsulate) {
+    scene = `A technician inside a residential crawl space laying and sealing heavy-duty plastic vapor barrier sheeting across the dirt floor, overlapping seams and taping edges. Service: ${itemName}.`;
   } else if (inCrawl) {
-    scene = `A technician is working inside a residential crawl space — ${itemName}`;
+    scene = `A technician working inside a residential crawl space performing ${itemName}.`;
+  } else if (isFogging) {
+    scene = `A technician using a fogging or misting machine to apply treatment throughout a residential space. Service: ${itemName}.`;
+  } else if (isRemoval) {
+    scene = `A technician removing old material and hauling debris away from a residential property. Service: ${itemName}.`;
   } else if (isInspect) {
-    scene = `A technician carefully inspects and evaluates — ${itemName}`;
+    scene = `A technician carefully inspecting a residential property with a flashlight and clipboard, documenting findings. Service: ${itemName}.`;
   } else if (isCleaning) {
-    scene = `A technician performs a professional ${itemName} service`;
+    scene = `A technician performing a professional cleaning service at a residential property. Service: ${itemName}.`;
   } else if (isDuct) {
-    scene = `A technician works on the ductwork system — ${itemName}`;
+    scene = `A technician working on the ductwork system inside a home, connecting, sealing, or cleaning ducts. Service: ${itemName}.`;
   } else if (isEquip || isInstall) {
-    scene = `A technician actively installs ${itemName} at a residential property`;
+    scene = `A technician actively installing ${itemName} at a residential property, using proper tools and equipment.`;
   } else {
-    scene = `A professional technician performing ${itemName}`;
+    scene = `A professional technician performing the following service at a residential home: ${itemName}.`;
   }
+
+  // ── Notes as primary context — put first so AI understands the work fully ──
+  // Notes describe exactly what the service involves; this heavily guides the image
+  const serviceCtx = notes
+    ? `What this service involves: ${notes.replace(/\n+/g, ' ').trim().slice(0, 300)}`
+    : `Category: ${categoryName}${industry ? ` — ${industry}` : ''}.`;
 
   // ── Property / setting ─────────────────────────────────────────────────────
   const property = home
@@ -94,21 +224,17 @@ function buildImagePrompt(itemName, categoryName, notes, industry, imageStyle = 
     ? `The technician: ${technician}.`
     : `A professional technician in clean work uniform and appropriate safety gear.`;
 
-  // ── Service context from item notes ───────────────────────────────────────
-  const serviceCtx = notes
-    ? `Service scope: ${notes.replace(/\n+/g, ' ').trim().slice(0, 220)}.`
-    : '';
-
   // ── Visual style / quality ─────────────────────────────────────────────────
   const quality = [
     styleNotes ? `Style: ${styleNotes}.` : 'Style: clean, bright, professional.',
-    'Photorealistic photograph, natural lighting, sharp focus on the work.',
+    'Photorealistic photograph, natural lighting, sharp focus on the work being performed.',
+    'Show the technician using the correct, realistic tools for this specific service.',
     'Real residential job site — not a staged studio look.',
-    'No text, no logos, no watermarks, no price tags, no overlaid graphics.',
-    'Composition shows the work in context — not just a tight closeup.',
+    'No text, no logos, no watermarks.',
   ].join(' ');
 
-  return [scene, property, worker, serviceCtx, quality].filter(Boolean).join('\n');
+  // Notes go FIRST so they anchor the AI's understanding, then scene, then property/worker/style
+  return [serviceCtx, scene, property, worker, quality].filter(Boolean).join('\n');
 }
 
 async function generateImageBuffer(openai, prompt, model = 'gpt-image-1', quality = 'low') {
@@ -116,7 +242,7 @@ async function generateImageBuffer(openai, prompt, model = 'gpt-image-1', qualit
     model,
     prompt,
     n: 1,
-    size: model === 'dall-e-3' ? '1024x1024' : '1536x1024',
+    size: '1536x1024',
     quality,
   };
   const imageRes = await openai.images.generate(options);
@@ -138,7 +264,7 @@ async function saveItemImage(slug, categoryName, itemName, inputBuffer, patch = 
 
   const imageUrl = imageApiUrl(slug, key);
   const currentOrg = getOrg(slug);
-  const updated = deepUpdateItem(currentOrg, categoryName, itemName, { imageUrl, ...patch });
+  const updated = deepUpdateItem(currentOrg, categoryName, itemName, { imageUrl, imageUpdatedAt: Date.now(), ...patch });
   saveOrg(updated);
   return imageUrl;
 }
@@ -282,7 +408,7 @@ router.get('/:slug/media/:filename', (req, res) => {
   const p = imageFilePath(req.params.slug, key);
   if (!fs.existsSync(p)) return res.status(404).send('Not found');
   res.setHeader('Content-Type', 'image/jpeg');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.setHeader('Cache-Control', 'no-store');
   fs.createReadStream(p).pipe(res);
 });
 
@@ -332,22 +458,41 @@ router.delete('/:slug/resources/item-image', (req, res) => {
 });
 
 // POST /api/orgs/:slug/resources/item-image/generate — AI-generate image for one item
+// GET /api/orgs/image-providers — which providers are configured
+router.get('/image-providers', (_req, res) => {
+  res.json({ success: true, data: getAvailableProviders() });
+});
+
 router.post('/:slug/resources/item-image/generate', async (req, res) => {
   try {
     const org = getOrg(req.params.slug);
     if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
 
-    const { categoryName, itemName, notes } = req.body;
+    const {
+      categoryName, itemName, notes,
+      provider = 'openai',
+      model = 'gpt-image-1',
+      quality = 'medium',
+    } = req.body;
     if (!categoryName || !itemName) return res.status(400).json({ success: false, error: 'categoryName and itemName required' });
 
-    if (!env.OPENAI_API_KEY) return res.status(500).json({ success: false, error: 'OPENAI_API_KEY not configured' });
-    const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+    logger.info(`Generating image: ${org.slug} / ${itemName} [${provider} ${model} ${quality}]`);
 
-    logger.info(`Generating AI image: ${org.slug} / ${itemName}`);
-    const prompt = buildImagePrompt(itemName, categoryName, notes, org.industry, org.imageStyle);
-    const buf = await generateImageBuffer(openai, prompt, 'gpt-image-1', 'medium');
-    const url = await saveItemImage(req.params.slug, categoryName, itemName, buf, { imageSource: 'ai-generated' });
-    logger.info(`AI image saved: ${req.params.slug} / ${itemName}`);
+    // GPT-4o builds the smart prompt (always uses OpenAI for this, regardless of image provider)
+    const openai = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
+    let prompt;
+    try {
+      if (!openai) throw new Error('No OpenAI key for prompt generation');
+      prompt = await buildSmartImagePrompt(openai, itemName, categoryName, notes, org, org.imageStyle, provider);
+      logger.info(`Smart prompt [${provider}]: ${prompt.slice(0, 120)}…`);
+    } catch (promptErr) {
+      logger.warn(`GPT-4o prompt failed, using static builder: ${promptErr.message}`);
+      prompt = buildImagePrompt(itemName, categoryName, notes, org.industry, org.imageStyle);
+    }
+
+    const buf = await generateImage(prompt, { provider, model, quality });
+    const url = await saveItemImage(req.params.slug, categoryName, itemName, buf, { imageSource: `${provider}:${model}` });
+    logger.info(`Image saved: ${req.params.slug} / ${itemName}`);
     res.json({ success: true, imageUrl: url });
   } catch (err) {
     logger.error(`AI image generation failed: ${err.message}`);
@@ -483,11 +628,10 @@ router.post('/:slug/resources/bulk-generate-images', async (req, res) => {
   const org = getOrg(req.params.slug);
   if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
 
-  const { categoryName, mode = 'generate', model = 'gpt-image-1', quality = 'low', overwrite = false } = req.body;
+  const { categoryName, mode = 'generate', provider = 'openai', model = 'gpt-image-1', quality = 'low', overwrite = false } = req.body;
   const cat = org.resources.categories.find((c) => c.name === categoryName);
   if (!cat) return res.status(404).json({ success: false, error: 'Category not found' });
 
-  if (mode === 'generate' && !env.OPENAI_API_KEY) return res.status(500).json({ success: false, error: 'OPENAI_API_KEY not configured' });
   if (!['generate', 'web'].includes(mode)) return res.status(400).json({ success: false, error: 'mode must be generate or web' });
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -495,7 +639,8 @@ router.post('/:slug/resources/bulk-generate-images', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
-  const openai = mode === 'generate' ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
+  // GPT-4o for prompt building (separate from image provider)
+  const promptOpenAI = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
   const results = [];
 
   for (let i = 0; i < cat.items.length; i++) {
@@ -518,9 +663,16 @@ router.post('/:slug/resources/bulk-generate-images', async (req, res) => {
         inputBuffer = await downloadImage(selected.url, selected.thumbUrl);
         imageSource = `web:${selected.domain || 'unknown'}`;
       } else {
-        const prompt = buildImagePrompt(item.name, categoryName, item.notes || item.itemInfo, org.industry, org.imageStyle);
-        inputBuffer = await generateImageBuffer(openai, prompt, model, quality);
-        imageSource = `ai:${model}`;
+        let prompt;
+        try {
+          if (!promptOpenAI) throw new Error('No OpenAI key');
+          prompt = await buildSmartImagePrompt(promptOpenAI, item.name, categoryName, item.notes || item.itemInfo, org, org.imageStyle, provider);
+        } catch (promptErr) {
+          logger.warn(`Smart prompt failed for "${item.name}", using fallback: ${promptErr.message}`);
+          prompt = buildImagePrompt(item.name, categoryName, item.notes || item.itemInfo, org.industry, org.imageStyle);
+        }
+        inputBuffer = await generateImage(prompt, { provider, model, quality });
+        imageSource = `${provider}:${model}`;
       }
 
       const url = await saveItemImage(req.params.slug, categoryName, item.name, inputBuffer, { imageSource, sourceUrl });
@@ -573,6 +725,150 @@ Generate visual style guidelines that will create a consistent, professional loo
     res.json({ success: true, data: suggestion });
   } catch (err) {
     logger.error(`Image style suggest failed: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Org logo routes ───────────────────────────────────────────────────────────
+
+// GET /api/orgs/:slug/logo — list uploaded variants
+router.get('/:slug/logo', (req, res) => {
+  try {
+    const dir = orgLogoDir(req.params.slug);
+    let variants = [];
+    try {
+      variants = fs.readdirSync(dir).filter(f => f.endsWith('.png')).map(f => f.replace('.png', ''));
+    } catch { /* no logos yet */ }
+    res.json({ success: true, data: variants });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/orgs/:slug/logo/:variant — serve logo PNG
+router.get('/:slug/logo/:variant', (req, res) => {
+  const p = orgLogoPath(req.params.slug, req.params.variant);
+  if (!fs.existsSync(p)) return res.status(404).send('Not found');
+  res.setHeader('Content-Type', 'image/png');
+  res.setHeader('Cache-Control', 'no-store');
+  fs.createReadStream(p).pipe(res);
+});
+
+// POST /api/orgs/:slug/logo/:variant — upload logo variant
+router.post('/:slug/logo/:variant', mediaUpload.single('logo'), async (req, res) => {
+  try {
+    const { slug, variant } = req.params;
+    if (!['white', 'dark', 'color', 'default'].includes(variant)) {
+      return res.status(400).json({ success: false, error: 'Invalid variant — use white, dark, color, or default' });
+    }
+    if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded' });
+    fs.mkdirSync(orgLogoDir(slug), { recursive: true });
+    const png = await processOrgLogo(req.file.buffer);
+    fs.writeFileSync(orgLogoPath(slug, variant), png);
+    logger.info(`Org logo uploaded: ${slug}/${variant}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE /api/orgs/:slug/logo/:variant — delete logo variant
+router.delete('/:slug/logo/:variant', (req, res) => {
+  try {
+    const p = orgLogoPath(req.params.slug, req.params.variant);
+    try { fs.unlinkSync(p); } catch { /* already gone */ }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/orgs/:slug/bulk-logo-apply — stamp logo on all item images, keep originals
+router.post('/:slug/bulk-logo-apply', async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const org = getOrg(slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+
+    const logoDir = orgLogoDir(slug);
+    let logoVariants = [];
+    try {
+      logoVariants = fs.readdirSync(logoDir).filter(f => f.endsWith('.png')).map(f => f.replace('.png', ''));
+    } catch { /* none */ }
+    if (logoVariants.length === 0) {
+      return res.status(400).json({ success: false, error: 'No logo uploaded for this org' });
+    }
+
+    const succeeded = [];
+    const failed = [];
+    const updatedOrg = JSON.parse(JSON.stringify(org));
+
+    for (const cat of org.resources?.categories || []) {
+      for (const item of cat.items || []) {
+        if (!item.imageUrl) continue;
+        const key = imageKey(cat.name, item.name);
+        const imgPath = imageFilePath(slug, key);
+        if (!fs.existsSync(imgPath)) {
+          failed.push({ item: item.name, error: 'Image file not found on disk' });
+          continue;
+        }
+
+        try {
+          const imageBuffer = fs.readFileSync(imgPath);
+          const { width, height } = await sharp(imageBuffer).metadata();
+          const margin = Math.round(width * 0.04);
+          const sampleSize = Math.min(120, Math.round(width * 0.25));
+          const zone = { left: Math.max(0, width - sampleSize - margin), top: Math.max(0, height - sampleSize - margin) };
+
+          const { data: sd } = await sharp(imageBuffer)
+            .extract({ ...zone, width: sampleSize, height: sampleSize })
+            .resize(8, 8).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+          let rr = 0, gg = 0, bb = 0;
+          for (let i = 0; i < sd.length; i += 3) { rr += sd[i]; gg += sd[i + 1]; bb += sd[i + 2]; }
+          const bright = (rr + gg + bb) / (3 * (sd.length / 3));
+
+          let preferred;
+          if (bright < 90)        preferred = ['white', 'color', 'default', 'dark'];
+          else if (bright < 160)  preferred = ['color', 'white', 'default', 'dark'];
+          else                    preferred = ['dark', 'color', 'default', 'white'];
+          const bestVariant = preferred.find(v => logoVariants.includes(v)) || logoVariants[0];
+
+          const logoBuffer = fs.readFileSync(orgLogoPath(slug, bestVariant));
+          const maxLogoW = Math.round(width * 0.25);
+          const resizedLogo = await sharp(logoBuffer).resize({ width: maxLogoW, withoutEnlargement: true }).png().toBuffer();
+          const { width: logoW, height: logoH } = await sharp(resizedLogo).metadata();
+          const pos = { left: width - logoW - margin, top: height - logoH - margin };
+
+          let finalLogo = resizedLogo;
+          if (bright > 140) finalLogo = await sharp(resizedLogo).negate({ alpha: false }).toBuffer();
+
+          const finalBuffer = await sharp(imageBuffer)
+            .composite([{ input: finalLogo, top: pos.top, left: pos.left }])
+            .jpeg({ quality: 90 })
+            .toBuffer();
+
+          // Save as {key}__logo.jpg — original stays untouched
+          const logoKey = `${key}__logo`;
+          fs.writeFileSync(imageFilePath(slug, logoKey), finalBuffer);
+          const imageUrlWithLogo = imageApiUrl(slug, logoKey);
+
+          const updCat = updatedOrg.resources.categories.find(c => c.name === cat.name);
+          const updItem = updCat?.items.find(i => i.name === item.name);
+          if (updItem) updItem.imageUrlWithLogo = imageUrlWithLogo;
+
+          succeeded.push({ item: item.name });
+        } catch (err) {
+          logger.warn(`Bulk logo: failed "${item.name}": ${err.message}`);
+          failed.push({ item: item.name, error: err.message });
+        }
+      }
+    }
+
+    if (succeeded.length > 0) saveOrg(updatedOrg);
+    logger.info(`Bulk logo apply: ${slug} — ${succeeded.length} ok, ${failed.length} failed`);
+    res.json({ success: true, data: { succeeded: succeeded.length, failed } });
+  } catch (err) {
+    logger.error(`Bulk logo apply failed: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
   }
 });
