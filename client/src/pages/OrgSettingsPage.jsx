@@ -16,6 +16,8 @@ import {
   uploadOrgLogo,
   deleteOrgLogo,
   bulkApplyOrgLogo,
+  listLogoSources,
+  importOrgLogo,
 } from "../services/orgApi.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -504,6 +506,9 @@ function LogoPanel({ org }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [imgBust, setImgBust] = useState(Date.now());
+  const [sources, setSources] = useState([]);
+  const [importFrom, setImportFrom] = useState("");
+  const [importing, setImporting] = useState(false);
   const fileRefs = useRef({});
 
   useEffect(() => {
@@ -511,7 +516,26 @@ function LogoPanel({ org }) {
       .then(setVariants)
       .catch(() => setVariants([]))
       .finally(() => setLoading(false));
+    listLogoSources(slug)
+      .then(setSources)
+      .catch(() => setSources([]));
   }, [slug]);
+
+  async function handleImport() {
+    if (!importFrom) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const data = await importOrgLogo(slug, importFrom);
+      setVariants(data.variants);
+      setImgBust(Date.now());
+      setImportFrom("");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setImporting(false);
+    }
+  }
 
   const itemsWithImages = (org.resources?.categories || [])
     .flatMap((c) => c.items || [])
@@ -614,6 +638,34 @@ function LogoPanel({ org }) {
                 </div>
               );
             })}
+          </div>
+        )}
+        {sources.length > 0 && (
+          <div className="org-logo-import">
+            <div className="org-logo-import__label">Or use a demo logo</div>
+            <div className="org-logo-import__row">
+              <select
+                className="settings-input org-logo-import__select"
+                value={importFrom}
+                onChange={(e) => setImportFrom(e.target.value)}
+                disabled={importing}
+              >
+                <option value="">Select a demo…</option>
+                {sources.map((s) => (
+                  <option key={s.slug} value={s.slug}>
+                    {s.name}{s.industry ? ` · ${s.industry}` : ""} ({s.variants.join(", ")})
+                  </option>
+                ))}
+              </select>
+              <button
+                className="btn btn--secondary"
+                onClick={handleImport}
+                disabled={!importFrom || importing}
+              >
+                {importing ? "Importing…" : "Use this logo"}
+              </button>
+            </div>
+            <div className="org-logo-import__hint">Copies the demo's logo variants into this org. Replaces any matching variants.</div>
           </div>
         )}
         {error && <div className="org-logo-error">{error}</div>}

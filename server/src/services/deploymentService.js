@@ -67,6 +67,8 @@ const DEFAULT_PAYMENT_TERMS = [
 // Locally-enriched item images live at generated-orgs/media/<slug>/<key>.jpg.
 // The key derivation MIRRORS orgRoutes.imageKey — keep the two in sync.
 const MEDIA_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../generated-orgs/media');
+// Org logos live at org-logos/<slug>/<variant>.png (mirrors orgRoutes.ORG_LOGOS_DIR).
+const ORG_LOGOS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../org-logos');
 function imageKey(categoryName, itemName) {
   const safe = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
   return `${safe(categoryName)}__${safe(itemName)}`;
@@ -388,8 +390,12 @@ function branchWriteBody(branch, org, multiplierRangeIds, workAreaIds) {
   };
 }
 
-// Two-step item-media upload (presign → PUT bytes to S3 → register, which
-// auto-attaches), using the per-target deploy auth.
+// Three-step item-media upload: presign → PUT bytes to S3 → register → attach.
+// NOTE: `register` only creates an orphan media row; unlike the org-logo flow
+// it does NOT link the media to the item. The item↔media relation is owned by
+// the item, so we must PATCH the item with `mediaIds` to attach it (which is
+// what makes it show in "Item Media" and become the thumbnail server-side).
+// The PATCH is a diff-sync (replaces the set), so re-deploys stay idempotent.
 async function uploadItemImage(baseUrl, auth, itemId, fileBuffer, filename) {
   const filesize = fileBuffer.length;
   const presign = await apiCall(baseUrl, auth, 'POST', `/items/${itemId}/media/upload-url`, {
@@ -400,7 +406,26 @@ async function uploadItemImage(baseUrl, auth, itemId, fileBuffer, filename) {
   const registered = await apiCall(baseUrl, auth, 'POST', `/items/${itemId}/media/register`, {
     prefix: presign.prefix, filename: presign.filename, mimeType: 'image/jpeg', filesize,
   });
-  return registered?.mediaId;
+  const mediaId = registered?.mediaId;
+  if (mediaId == null) throw new Error('register returned no mediaId');
+  await apiCall(baseUrl, auth, 'PATCH', `/items/${itemId}`, { mediaIds: [mediaId] });
+  return mediaId;
+}
+
+// Org-logo upload — same presign → PUT bytes → register flow as item media, but
+// against the org-scoped /organization/me/logo endpoints (the API key is already
+// bound to the target org, so no id is needed in the path).
+async function uploadOrgLogo(baseUrl, auth, fileBuffer, filename) {
+  const filesize = fileBuffer.length;
+  const presign = await apiCall(baseUrl, auth, 'POST', '/organization/me/logo/upload-url', {
+    mimeType: 'image/png', originalFilename: filename, filesize,
+  });
+  const put = await fetch(presign.uploadUrl, { method: 'PUT', headers: presign.uploadHeaders, body: fileBuffer });
+  if (!put.ok) throw new Error(`logo PUT failed (${put.status})`);
+  const registered = await apiCall(baseUrl, auth, 'POST', '/organization/me/logo', {
+    prefix: presign.prefix, filename: presign.filename, mimeType: 'image/png', filesize,
+  });
+  return registered?.mediaId ?? registered?.id ?? null;
 }
 
 export async function deployOrg(org, options, onStep) {
@@ -565,19 +590,53 @@ export async function deployOrg(org, options, onStep) {
     // Per-image failures are skipped, not fatal, so the deploy still completes.
     step('images', 'running');
     let imageCount = 0;
+    const imageFailures = [];
     for (const item of itemsWithCategory) {
       const itemId = itemIds[item.name];
-      const file = path.join(MEDIA_ROOT, org.slug, `${imageKey(item.__categoryName, item.name)}.jpg`);
+      // Prefer the logo-composited variant (<key>__logo.jpg) — that's the branded
+      // image the generator shows. Fall back to the base <key>.jpg when no logo
+      // has been applied to this item.
+      const key = imageKey(item.__categoryName, item.name);
+      const logoFile = path.join(MEDIA_ROOT, org.slug, `${key}__logo.jpg`);
+      const baseFile = path.join(MEDIA_ROOT, org.slug, `${key}.jpg`);
+      const file = fs.existsSync(logoFile) ? logoFile : baseFile;
       if (!itemId || !fs.existsSync(file)) continue;
       try {
         const mediaId = await uploadItemImage(options.apiUrl, auth, itemId, fs.readFileSync(file), `${item.name}.jpg`);
         action('item-media', 'created', item.name, mediaId);
         imageCount += 1;
       } catch (err) {
-        step('images', 'running', `skipped ${item.name}: ${err.message}`);
+        imageFailures.push(`${item.name}: ${err.message}`);
+        logger.warn(`[deploy] item image upload failed for "${item.name}": ${err.message}`);
       }
     }
-    step('images', 'done', `${imageCount} image(s) uploaded`);
+    // Surface failures instead of silently swallowing them: a non-zero failure
+    // count marks the step failed (red) with the count + first error, and every
+    // failure is warn-logged above. The deploy itself stays non-fatal.
+    if (imageFailures.length) {
+      step('images', 'failed', `${imageCount} uploaded, ${imageFailures.length} failed — e.g. ${imageFailures[0]}`);
+    } else {
+      step('images', 'done', `${imageCount} image(s) uploaded`);
+    }
+
+    // Upload the org logo (org-level branding) to the org-scoped logo endpoint.
+    // Prefer the full-color variant, falling back through default/dark/white.
+    // Non-fatal: a logo failure is warn-logged and surfaced but never aborts.
+    step('logo', 'running');
+    try {
+      const logoDir = path.join(ORG_LOGOS_ROOT, org.slug);
+      const variant = ['color', 'default', 'dark', 'white'].find((v) => fs.existsSync(path.join(logoDir, `${v}.png`)));
+      if (!variant) {
+        step('logo', 'done', 'no logo on file — skipped');
+      } else {
+        const mediaId = await uploadOrgLogo(options.apiUrl, auth, fs.readFileSync(path.join(logoDir, `${variant}.png`)), `${org.slug}-logo.png`);
+        action('org-logo', 'created', variant, mediaId);
+        step('logo', 'done', `uploaded ${variant} logo`);
+      }
+    } catch (err) {
+      logger.warn(`[deploy] logo upload failed: ${err.message}`);
+      step('logo', 'failed', `logo upload failed: ${err.message}`);
+    }
 
     step('work-areas', 'running');
     const workAreaIds = await upsertNamed(options.apiUrl, auth, 'work-areas', org.resources.workAreas, existing.workAreas, (workArea) => ({

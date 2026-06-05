@@ -192,6 +192,8 @@ async function buildSmartImagePrompt(openai, itemName, categoryName, notes, org,
 
   const systemPrompt = `You are an expert at writing image generation prompts for professional contractor service catalog photos.
 Write prompts that produce photorealistic images showing exactly what the service looks like when a real technician performs it.
+Image models are negation-blind: never write "no X", "without X", "avoid X", or "not X" — they tend to render exactly the thing you tell them to exclude. To exclude something, describe its positive opposite concretely (e.g. for "no open attic" describe "a fully enclosed attic with solid sheathed walls and no daylight"; for "no female technician" describe "a male technician").
+When the user gives EXCLUSIONS, they override the saved visual style wherever they conflict.
 Output ONLY the prompt — no explanation, no quotes, no preamble.`;
 
   const userMessage = [
@@ -208,7 +210,8 @@ Output ONLY the prompt — no explanation, no quotes, no preamble.`;
     technician ? `Technician: ${technician}` : '',
     styleNotes ? `Style: ${styleNotes}`      : '',
     '',
-    avoid ? `MUST AVOID — recurring unrealistic elements for this trade. Do NOT include any of these in the image, and bake matching negatives into the prompt: ${avoid}` : '',
+    avoid ? `EXCLUDE THESE (the user reviewed past images and these must NOT appear): ${avoid}.` : '',
+    avoid ? `For each exclusion, write the positive opposite directly into the scene description — describe what IS there instead, never "no/without/avoid". These exclusions override the visual style above if they conflict.` : '',
     '',
     'Instructions:',
     formatGuide,
@@ -417,14 +420,15 @@ router.delete('/:slug', (req, res) => {
 });
 
 // POST /api/orgs/:slug/clone-to-real — spin a real client org off a demo template.
-// Reuses the demo's catalog + curated item images; swaps in real identity. The
-// real logo is NOT copied (the client gets its own).
+// Reuses the demo's catalog + curated item images; swaps in real identity. By
+// default the logo is NOT copied (the client gets its own); pass copyLogo:true
+// to carry the demo's logo (e.g. the "YOUR LOGO" placeholder) into the new org.
 router.post('/:slug/clone-to-real', (req, res) => {
   try {
     const demo = getOrg(req.params.slug);
     if (!demo) return res.status(404).json({ success: false, error: 'Org not found' });
 
-    const { companyName, companyWebsite, domain, timezone, region } = req.body || {};
+    const { companyName, companyWebsite, domain, timezone, region, copyLogo = false } = req.body || {};
     if (!companyName?.trim()) return res.status(400).json({ success: false, error: 'companyName is required' });
 
     // Unique slug derived from the real company name
@@ -462,9 +466,20 @@ router.post('/:slug/clone-to-real', (req, res) => {
     const srcMedia = mediaDir(demo.slug);
     if (fs.existsSync(srcMedia)) fs.cpSync(srcMedia, mediaDir(slug), { recursive: true });
 
+    // Optionally carry the demo's logo (default placeholder or generated) into
+    // the new org so it starts branded instead of logo-less.
+    let logoCopied = false;
+    if (copyLogo) {
+      const srcLogos = orgLogoDir(demo.slug);
+      if (fs.existsSync(srcLogos)) {
+        fs.cpSync(srcLogos, orgLogoDir(slug), { recursive: true });
+        logoCopied = true;
+      }
+    }
+
     saveOrg(clone);
-    logger.info(`Cloned demo ${demo.slug} → real client ${slug}`);
-    res.json({ success: true, data: { slug, org: clone } });
+    logger.info(`Cloned demo ${demo.slug} → real client ${slug}${logoCopied ? ' (logo copied)' : ''}`);
+    res.json({ success: true, data: { slug, org: clone, logoCopied } });
   } catch (err) {
     logger.error(`Clone-to-real failed: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
@@ -888,6 +903,52 @@ router.get('/:slug/logo', (req, res) => {
       variants = fs.readdirSync(dir).filter(f => f.endsWith('.png')).map(f => f.replace('.png', ''));
     } catch { /* no logos yet */ }
     res.json({ success: true, data: variants });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/orgs/:slug/logo-sources — demo orgs (other than this one) whose logo
+// can be imported here. Returns [{ slug, name, industry, variants }].
+router.get('/:slug/logo-sources', (req, res) => {
+  try {
+    const self = req.params.slug;
+    const sources = listOrgs()
+      .filter((o) => o.slug !== self && o.source === 'demo')
+      .map((o) => {
+        let variants = [];
+        try {
+          variants = fs.readdirSync(orgLogoDir(o.slug)).filter((f) => f.endsWith('.png')).map((f) => f.replace('.png', ''));
+        } catch { /* no logos */ }
+        return { slug: o.slug, name: o.name, industry: o.industry, variants };
+      })
+      .filter((o) => o.variants.length > 0);
+    res.json({ success: true, data: sources });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/orgs/:slug/import-logo — copy another org's logo variants into this
+// org (e.g. pull a demo's "YOUR LOGO" placeholder). Body: { sourceSlug }.
+router.post('/:slug/import-logo', (req, res) => {
+  try {
+    const org = getOrg(req.params.slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+
+    const { sourceSlug } = req.body || {};
+    if (!sourceSlug) return res.status(400).json({ success: false, error: 'sourceSlug is required' });
+    if (sourceSlug === org.slug) return res.status(400).json({ success: false, error: 'Cannot import a logo from the same org' });
+
+    const srcDir = orgLogoDir(sourceSlug);
+    if (!fs.existsSync(srcDir)) return res.status(404).json({ success: false, error: 'Source org has no logo to import' });
+
+    fs.mkdirSync(orgLogoDir(org.slug), { recursive: true });
+    fs.cpSync(srcDir, orgLogoDir(org.slug), { recursive: true });
+
+    const variants = fs.readdirSync(orgLogoDir(org.slug)).filter((f) => f.endsWith('.png')).map((f) => f.replace('.png', ''));
+    logger.info(`Imported logo: ${sourceSlug} → ${org.slug}`);
+    res.json({ success: true, data: { variants } });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

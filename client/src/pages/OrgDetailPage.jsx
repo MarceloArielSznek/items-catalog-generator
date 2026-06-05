@@ -528,7 +528,7 @@ function DemoActions({ org, onChanged }) {
   const [logoMsg, setLogoMsg] = useState("");
   const [logoVer, setLogoVer] = useState(Date.now());
   const [showConvert, setShowConvert] = useState(false);
-  const [form, setForm] = useState({ companyName: "", companyWebsite: "" });
+  const [form, setForm] = useState({ companyName: "", companyWebsite: "", copyLogo: false });
   const [converting, setConverting] = useState(false);
   const [error, setError] = useState("");
 
@@ -572,6 +572,7 @@ function DemoActions({ org, onChanged }) {
       const { slug } = await cloneToReal(org.slug, {
         companyName: form.companyName.trim(),
         companyWebsite: form.companyWebsite.trim(),
+        copyLogo: form.copyLogo,
       });
       navigate(`/orgs/${slug}`);
     } catch (e) {
@@ -612,12 +613,16 @@ function DemoActions({ org, onChanged }) {
           <button className="btn btn--primary" onClick={() => setShowConvert(true)}>Convert to Real Client →</button>
         ) : (
           <form className="demo-tools__convert" onSubmit={handleConvert}>
-            <p className="demo-tools__desc">Clones this catalog + item images into a new real-client org. Swap in the real identity; add the real logo separately.</p>
+            <p className="demo-tools__desc">Clones this catalog + item images into a new real-client org. Swap in the real identity; add the real logo separately — or carry over the demo logo below.</p>
             <label className="form-label">Real company name
               <input className="form-input" value={form.companyName} onChange={(e) => setForm({ ...form, companyName: e.target.value })} placeholder="Acme Insulation LLC" disabled={converting} />
             </label>
             <label className="form-label">Website (optional)
               <input className="form-input" value={form.companyWebsite} onChange={(e) => setForm({ ...form, companyWebsite: e.target.value })} placeholder="https://acme.com" disabled={converting} />
+            </label>
+            <label className="demo-tools__check">
+              <input type="checkbox" checked={form.copyLogo} onChange={(e) => setForm({ ...form, copyLogo: e.target.checked })} disabled={converting} />
+              Copy the demo logo to the new org
             </label>
             <div className="demo-tools__actions">
               <button type="button" className="btn btn--secondary" onClick={() => setShowConvert(false)} disabled={converting}>Cancel</button>

@@ -95,6 +95,14 @@ export function listOrgLogos(slug) {
     .then((j) => { if (!j.success) throw new Error(j.error); return j.data; });
 }
 
+export function listLogoSources(slug) {
+  return req('GET', `/${slug}/logo-sources`);
+}
+
+export function importOrgLogo(slug, sourceSlug) {
+  return req('POST', `/${slug}/import-logo`, { sourceSlug });
+}
+
 export function uploadOrgLogo(slug, variant, file) {
   const form = new FormData();
   form.append('logo', file);
