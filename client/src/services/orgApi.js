@@ -1,9 +1,11 @@
+import { menaiaHeaders } from './menaiaSettings.js';
+
 const BASE = '/api/orgs';
 
 async function req(method, path, body) {
   const res = await fetch(`${BASE}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...menaiaHeaders() },
     body: body ? JSON.stringify(body) : undefined,
   });
   const json = await res.json();

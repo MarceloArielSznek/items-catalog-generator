@@ -20,6 +20,9 @@ export default function Header() {
             Price Book
           </NavLink>
         )}
+        <NavLink to="/settings" className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
+          Settings
+        </NavLink>
       </nav>
     </header>
   );
