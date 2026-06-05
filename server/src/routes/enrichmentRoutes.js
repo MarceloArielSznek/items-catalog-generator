@@ -649,7 +649,7 @@ router.get("/export-package/:orgId", async (req, res) => {
       // only for any legacy relative path.
       const fullUrl = relUrl.startsWith("http")
         ? relUrl
-        : `${(await import("../config/env.js")).default.MENAIA_API_URL}${relUrl}`;
+        : `${(await import("../config/menaiaContext.js")).getMenaiaApiUrl()}${relUrl}`;
 
       try {
         const imgRes = await fetch(fullUrl, { signal: AbortSignal.timeout(15000) });

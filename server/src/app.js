@@ -5,6 +5,7 @@ import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import env from "./config/env.js";
+import { menaiaContextMiddleware } from "./config/menaiaContext.js";
 import imageRoutes from "./routes/imageRoutes.js";
 import sceneRoutes from "./routes/sceneRoutes.js";
 import downloadRoutes from "./routes/downloadRoutes.js";
@@ -48,6 +49,9 @@ if (env.IS_PRODUCTION) {
 }
 
 app.use(express.json());
+
+// Resolve per-request Menaia credentials (sent by the browser) for all routes.
+app.use(menaiaContextMiddleware);
 
 app.use("/generated", express.static(env.GENERATED_DIR));
 app.use("/scenes", express.static(env.SCENES_DIR));

@@ -1,20 +1,26 @@
-import env from "../config/env.js";
+import {
+  getMenaiaApiKey as resolveApiKey,
+  getMenaiaApiUrl,
+} from "../config/menaiaContext.js";
 
 const V1_PREFIX = "/v1";
 
 function buildApiUrl(pathname) {
-  return `${env.MENAIA_API_URL}${V1_PREFIX}${pathname}`;
+  return `${getMenaiaApiUrl()}${V1_PREFIX}${pathname}`;
 }
 
 /**
- * Static service-account API key. The key is bound to a single org, so there
- * is no session to refresh — every request carries the same bearer.
+ * Service-account API key for the active request. Resolved from the browser
+ * (sent per-request) with a `.env` fallback for non-browser callers. The key is
+ * bound to a single org, so there is no session to refresh — every request
+ * carries the same bearer.
  */
 export function getMenaiaApiKey() {
-  if (!env.MENAIA_API_KEY) {
-    throw new Error("Missing Menaia API key: set MENAIA_API_KEY");
+  const key = resolveApiKey();
+  if (!key) {
+    throw new Error("Missing Menaia API key: set it in the app's Settings page");
   }
-  return env.MENAIA_API_KEY;
+  return key;
 }
 
 /**
