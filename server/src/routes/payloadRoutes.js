@@ -21,8 +21,7 @@ import {
   getAllItems,
   getItem,
   updateItem,
-  uploadMedia,
-  attachMediaToItem,
+  uploadItemMedia,
   detachMediaFromItem,
   getFactors,
   getAdditionalCosts,
@@ -227,19 +226,22 @@ router.post("/items/:id/media", mediaUpload.single("file"), async (req, res, nex
       if (file.path) await fs.unlink(file.path).catch(() => {});
     }
 
-    const mediaDoc = await uploadMedia(buffer, file.originalname, file.mimetype);
-    const mediaId = mediaDoc?.id;
+    const { mediaId, publicUrl } = await uploadItemMedia(
+      req.params.id,
+      buffer,
+      file.originalname,
+      file.mimetype,
+    );
     if (!mediaId) {
       return res.status(500).json({ success: false, error: "Upload succeeded but media ID was not returned" });
     }
 
-    await attachMediaToItem(req.params.id, mediaId);
     res.json({
       success: true,
       data: {
         mediaId,
-        mediaUrl: mediaDoc?.url || "",
-        filename: mediaDoc?.filename || file.originalname,
+        mediaUrl: publicUrl || "",
+        filename: file.originalname,
       },
     });
   } catch (err) {

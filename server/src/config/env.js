@@ -18,18 +18,11 @@ const env = {
   SCENES_DIR: path.resolve(SERVER_ROOT, process.env.SCENES_DIR || "src/scenes"),
   IS_PRODUCTION: process.env.NODE_ENV === "production",
 
-  PAYLOAD_API_URL: (process.env.MENAIA_API_URL || process.env.API_BASE_URL || "https://app.menaia.com").replace(/\/+$/, ""),
-  MENAIA_EMAIL: process.env.MENAIA_EMAIL || process.env.API_USER || "",
-  MENAIA_PASSWORD: process.env.MENAIA_PASSWORD || process.env.API_PASSWORD || "",
-  SUPABASE_URL: (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, ""),
-  SUPABASE_PUBLISHABLE_KEY:
-    process.env.SUPABASE_PUBLISHABLE_KEY ||
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    "",
-  VERCEL_TOKEN: process.env.VERCEL_TOKEN || "",
-  PAYLOAD_TIMEOUT: parseInt(process.env.API_TIMEOUT_MS, 10) || 15000,
+  // Menaia NestJS API. Base URL only — service code appends `/v1`.
+  MENAIA_API_URL: (process.env.MENAIA_API_URL || process.env.API_BASE_URL || "https://app.menaia.com").replace(/\/+$/, ""),
+  // Single service-account API key (mk_live_… / mk_test_…), bound to one org.
+  MENAIA_API_KEY: process.env.MENAIA_API_KEY || "",
+  MENAIA_TIMEOUT: parseInt(process.env.API_TIMEOUT_MS, 10) || 15000,
 
   // Image search (Serper.dev)
   SERPER_API_KEY: process.env.SERPER_API_KEY || "",
@@ -44,5 +37,14 @@ const env = {
 
 env.MAX_FILE_SIZE_BYTES = env.MAX_FILE_SIZE_MB * 1024 * 1024;
 env.MAX_MEDIA_SIZE_BYTES = env.MAX_MEDIA_SIZE_MB * 1024 * 1024;
+
+export function validateConfig() {
+  const missing = [];
+  if (!env.MENAIA_API_URL) missing.push("MENAIA_API_URL or API_BASE_URL");
+  if (!env.MENAIA_API_KEY) missing.push("MENAIA_API_KEY");
+  if (missing.length > 0) {
+    throw new Error(`Missing Menaia API env vars: ${missing.join(", ")}`);
+  }
+}
 
 export default env;

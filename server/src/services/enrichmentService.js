@@ -6,7 +6,7 @@ import OpenAI from "openai";
 import env from "../config/env.js";
 import logger from "../utils/logger.js";
 import { findBestImage, findImageCandidates, downloadImage } from "./imageSearchService.js";
-import { getItem, updateItem, uploadMedia, attachMediaToItem, detachMediaFromItem, getCategories } from "./payloadService.js";
+import { getItem, updateItem, uploadItemMedia, detachMediaFromItem, getCategories } from "./payloadService.js";
 import { getRejectedImageUrls as getFeedbackRejections, getAllFeedback, getAcceptedSiblingUrls, normalizeItemBaseName } from "./feedbackService.js";
 import { getOrgConfig } from "./orgConfigService.js";
 
@@ -402,10 +402,7 @@ export async function enrichItem(itemId, orgId, onProgress = () => {}, industryC
   }
 
   const filename = `${itemName.replace(/\s+/g, "-").toLowerCase()}-enriched.jpg`;
-  const mediaDoc = await uploadMedia(finalImageBuffer, filename, "image/jpeg");
-  if (mediaDoc?.id) {
-    await attachMediaToItem(itemId, mediaDoc.id);
-  }
+  await uploadItemMedia(itemId, finalImageBuffer, filename, "image/jpeg");
 
   // ── Step 5: Save description ──
   onProgress({ step: "save", message: "Saving description…" });
@@ -627,13 +624,12 @@ export async function applyEnrich(itemId, orgId, {
 
   // Upload
   const filename = `${itemName.replace(/\s+/g, "-").toLowerCase()}-enriched.jpg`;
-  const mediaDoc = await uploadMedia(imageBuffer, filename, "image/jpeg");
-  if (mediaDoc?.id) await attachMediaToItem(itemId, mediaDoc.id);
+  const { mediaId } = await uploadItemMedia(itemId, imageBuffer, filename, "image/jpeg");
 
   // Save description
   if (description) await updateItem(itemId, { itemInfo: description });
 
-  return { success: true, itemName, mediaId: mediaDoc?.id };
+  return { success: true, itemName, mediaId };
 }
 
 
@@ -698,8 +694,7 @@ export async function bulkApplyLogo(orgId, itemIds) {
       }
 
       const filename = `${itemName.replace(/\s+/g, "-").toLowerCase()}-enriched.jpg`;
-      const mediaDoc = await uploadMedia(finalBuffer, filename, "image/jpeg");
-      if (mediaDoc?.id) await attachMediaToItem(itemId, mediaDoc.id);
+      await uploadItemMedia(itemId, finalBuffer, filename, "image/jpeg");
 
       logger.info(`bulkApplyLogo: ✓ itemId=${itemId} (${itemName})`);
       succeeded.push({ itemId });
