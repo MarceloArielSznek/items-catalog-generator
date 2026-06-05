@@ -19,7 +19,7 @@ import {
   deletePreGeneratedImage,
 } from "../services/enrichmentService.js";
 import { getOrgConfig, setOrgConfig, setWebsiteContext } from "../services/orgConfigService.js";
-import { getAllItemsForOrg, uploadMedia, attachMediaToItem, detachMediaFromItem, updateItem } from "../services/payloadService.js";
+import { getAllItemsForOrg, uploadItemMedia, detachMediaFromItem, updateItem } from "../services/payloadService.js";
 import { extractWebsiteContext } from "../services/websiteContextService.js";
 import { addFeedback, addFeedbackBatch, getFeedbackStats, getAllFeedback } from "../services/feedbackService.js";
 import { buildLearnedRules, getLearningInsights, loadRefinedModel, refineWithOpus } from "../services/learningEngine.js";
@@ -645,9 +645,11 @@ router.get("/export-package/:orgId", async (req, res) => {
       const relUrl = mediaItem?.url || mediaItem?.sizes?.thumbnail?.url;
       if (!relUrl) continue;
 
+      // Media URLs from /v1 are absolute S3 publicUrls; fall back to the API base
+      // only for any legacy relative path.
       const fullUrl = relUrl.startsWith("http")
         ? relUrl
-        : `${(await import("../config/env.js")).default.PAYLOAD_API_URL}${relUrl}`;
+        : `${(await import("../config/env.js")).default.MENAIA_API_URL}${relUrl}`;
 
       try {
         const imgRes = await fetch(fullUrl, { signal: AbortSignal.timeout(15000) });
@@ -716,8 +718,7 @@ router.post("/apply-package/:orgId", upload.single("package"), async (req, res, 
         }
 
         const filename = `${(item.name || "item").replace(/\s+/g, "-").toLowerCase()}-enriched.jpg`;
-        const mediaDoc = await uploadMedia(imageBuffer, filename, "image/jpeg");
-        if (mediaDoc?.id) await attachMediaToItem(item.id, mediaDoc.id);
+        await uploadItemMedia(item.id, imageBuffer, filename, "image/jpeg");
         if (entry.description) await updateItem(item.id, { itemInfo: entry.description });
 
         results.applied.push(entry.itemName);

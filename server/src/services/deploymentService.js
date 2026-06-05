@@ -3,9 +3,11 @@ import logger from '../utils/logger.js';
 
 const PAGE_LIMIT = 100;
 
+// Menaia NestJS API base. The per-target org's `apiUrl` already points at the
+// API host; we append `/v1` (the versioned API namespace) here.
 function apiBaseUrl(baseUrl) {
   const base = baseUrl.replace(/\/+$/, '');
-  return base.endsWith('/api') ? base : `${base}/api`;
+  return base.endsWith('/v1') ? base : `${base}/v1`;
 }
 
 function requireArray(value, path) {
@@ -74,54 +76,39 @@ export function validateOrgForDeployment(org) {
   return true;
 }
 
-function buildSupabaseCookie(supabaseUrl, session) {
-  const projectRef = new URL(supabaseUrl).hostname.split('.')[0];
-  const cookieName = `sb-${projectRef}-auth-token`;
-  const payload = encodeURIComponent(JSON.stringify({
-    access_token: session.access_token,
-    refresh_token: session.refresh_token,
-    token_type: session.token_type ?? 'bearer',
-    expires_in: session.expires_in,
-    expires_at: session.expires_at,
-    user: session.user,
-  }));
-  const chunks = [];
-  for (let index = 0; index < payload.length; index += 3800) {
-    chunks.push(`${cookieName}.${chunks.length}=${payload.slice(index, index + 3800)}`);
-  }
-  return chunks.join('; ');
-}
+/**
+ * Authenticate against the Menaia NestJS API with a per-target service-account
+ * API key (format `mk_live_…`). The key is bound to exactly one organization,
+ * so it scopes every request — no Supabase password grant, no cookies.
+ *
+ * New `options.credentials` shape: `{ apiKey }`
+ *   (replaces the old `{ email, password, supabaseUrl, publishableKey, vercelToken }`).
+ *
+ * Returns `{ headers, user }` where `headers` carry the bearer token and
+ * `user` is the calling principal/actor resolved from `GET /v1/me`.
+ */
+async function authenticate(credentials, baseUrl) {
+  const apiKey = credentials?.apiKey || env.MENAIA_API_KEY;
+  if (!apiKey) throw new Error('A Menaia API key (credentials.apiKey) is required');
 
-async function authenticate(credentials) {
-  const supabaseUrl = (credentials.supabaseUrl || env.SUPABASE_URL || '').replace(/\/+$/, '');
-  const publishableKey = credentials.publishableKey || env.SUPABASE_PUBLISHABLE_KEY;
-  if (!supabaseUrl || !publishableKey) throw new Error('Supabase URL and publishable key are required');
-  if (!credentials.email || !credentials.password) throw new Error('Admin email and password are required');
-
-  const response = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
-    method: 'POST',
+  const auth = {
     headers: {
+      Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
-      apikey: publishableKey,
-      Authorization: `Bearer ${publishableKey}`,
     },
-    body: JSON.stringify({ email: credentials.email, password: credentials.password }),
-  });
-  const session = await response.json().catch(() => null);
-  if (!response.ok || !session?.access_token) {
-    throw new Error(`Admin sign-in failed: ${session?.error_description || session?.message || response.statusText}`);
-  }
-
-  const cookie = buildSupabaseCookie(supabaseUrl, session);
-  return {
-    headers: {
-      'Content-Type': 'application/json',
-      Cookie: [credentials.vercelToken || env.VERCEL_TOKEN ? `_vercel_jwt=${credentials.vercelToken || env.VERCEL_TOKEN}` : '', cookie]
-        .filter(Boolean)
-        .join('; '),
-    },
-    user: { id: session.user?.id || null, email: session.user?.email || credentials.email },
+    user: null,
   };
+
+  // Resolve the calling principal (actor) + bound org from /v1/me.
+  const me = await apiCall(baseUrl || env.MENAIA_API_URL, auth, 'GET', '/me');
+  auth.user = {
+    id: me?.user?.id ?? null,
+    email: me?.user?.email ?? null,
+    organizationId: me?.organization?.id ?? null,
+    organizationName: me?.organization?.name ?? null,
+    principal: me?.principal ?? null,
+  };
+  return auth;
 }
 
 async function apiCall(baseUrl, auth, method, path, body) {
@@ -135,31 +122,31 @@ async function apiCall(baseUrl, auth, method, path, body) {
   try { result = text ? JSON.parse(text) : null; } catch { result = text; }
   if (!response.ok) {
     const message = result?.errors?.[0]?.message || result?.message || result || response.statusText;
-    throw new Error(`${method} /api${path} -> ${response.status}: ${message}`);
+    throw new Error(`${method} /v1${path} -> ${response.status}: ${message}`);
   }
   return result;
 }
 
+// Lists paginate as `{ data: [...], meta: { pagination: { page, pageCount, ... } } }`.
+// Loop pages until `page > pageCount`, collecting `.data`.
 async function listAll(baseUrl, auth, collection, params = {}) {
   const docs = [];
   let page = 1;
-  let hasNextPage = true;
-  while (hasNextPage) {
-    const query = new URLSearchParams({ limit: String(PAGE_LIMIT), page: String(page), depth: '0', ...params });
+  let pageCount = 1;
+  do {
+    const query = new URLSearchParams({ pageSize: String(PAGE_LIMIT), page: String(page), ...params });
     const result = await apiCall(baseUrl, auth, 'GET', `/${collection}?${query}`);
-    docs.push(...(result?.docs || []));
-    hasNextPage = Boolean(result?.hasNextPage);
+    docs.push(...(result?.data || []));
+    pageCount = Number(result?.meta?.pagination?.pageCount) || 1;
     page++;
-  }
+  } while (page <= pageCount);
   return docs;
 }
 
+// The API key is bound to one org; `GET /v1/organization/me` returns that org.
 async function resolveScopedOrganization(baseUrl, auth, expectedOrganizationId = null) {
-  const organizations = await listAll(baseUrl, auth, 'organizations');
-  if (organizations.length !== 1) {
-    throw new Error(`Scoped admin must have access to exactly one organization; found ${organizations.length}`);
-  }
-  const organization = organizations[0];
+  const organization = await apiCall(baseUrl, auth, 'GET', '/organization/me');
+  if (!organization?.id) throw new Error('Could not resolve the scoped organization from /v1/organization/me');
   if (expectedOrganizationId != null && String(organization.id) !== String(expectedOrganizationId)) {
     throw new Error(`Authenticated organization changed: expected ${expectedOrganizationId}, found ${organization.id}`);
   }
@@ -189,25 +176,26 @@ function flatItems(org) {
   return org.resources.categories.flatMap((category) => category.items);
 }
 
-async function loadExisting(baseUrl, auth, organizationId) {
-  const scoped = { 'where[organization][equals]': String(organizationId) };
+// The API key scopes every list to the bound org, so no organization filter is
+// passed. Each list collects the `.data` envelope across pages.
+async function loadExisting(baseUrl, auth) {
   const [factors, additionalCosts, multiplierRanges, items, categories, workAreas, branches] = await Promise.all([
-    listAll(baseUrl, auth, 'factors', scoped),
-    listAll(baseUrl, auth, 'additional-costs', scoped),
-    listAll(baseUrl, auth, 'multiplier-ranges', scoped),
-    listAll(baseUrl, auth, 'items', scoped),
-    listAll(baseUrl, auth, 'item-categories', scoped),
-    listAll(baseUrl, auth, 'work-areas', scoped),
-    listAll(baseUrl, auth, 'branches', scoped),
+    listAll(baseUrl, auth, 'factors'),
+    listAll(baseUrl, auth, 'additional-costs'),
+    listAll(baseUrl, auth, 'multiplier-ranges'),
+    listAll(baseUrl, auth, 'items'),
+    listAll(baseUrl, auth, 'item-categories'),
+    listAll(baseUrl, auth, 'work-areas'),
+    listAll(baseUrl, auth, 'branches'),
   ]);
   return { factors, additionalCosts, multiplierRanges, items, categories, workAreas, branches };
 }
 
 export async function preflightOrgDeployment(org, options) {
   validateOrgForDeployment(org);
-  const auth = await authenticate(options.credentials);
+  const auth = await authenticate(options.credentials, options.apiUrl);
   const organization = await resolveScopedOrganization(options.apiUrl, auth);
-  const existing = await loadExisting(options.apiUrl, auth, organization.id);
+  const existing = await loadExisting(options.apiUrl, auth);
   const collections = [
     collectionPlan('Factors', org.resources.factors, existing.factors),
     collectionPlan('Additional costs', org.resources.additionalCosts || [], existing.additionalCosts),
@@ -256,7 +244,7 @@ async function upsertNamed(baseUrl, auth, collection, desired, existing, bodyFn,
   const ids = {};
   for (const item of desired) {
     const match = existingByName.get(String(item.name).trim().toLowerCase());
-    const body = bodyFn(item);
+    const body = bodyFn(item, match);
     const result = match
       ? await apiCall(baseUrl, auth, 'PATCH', `/${collection}/${match.id}`, body)
       : await apiCall(baseUrl, auth, 'POST', `/${collection}`, body);
@@ -266,12 +254,26 @@ async function upsertNamed(baseUrl, auth, collection, desired, existing, bodyFn,
   return ids;
 }
 
-function branchBaseConstants(branch) {
+/**
+ * Build the flat branch write body accepted by Create/UpdateBranchSchema.
+ * The /v1 branch schema is FLAT (no nested `baseConstants`) and is used for
+ * BOTH `POST /v1/branches` and `PATCH /v1/branches/:id`. `multiplierRangeIds`
+ * and `workAreaIds` carry the configuration's relations.
+ *
+ * NOTE: several legacy branch-config fields are NOT in Create/UpdateBranchSchema
+ * and are intentionally omitted — see the TODO(menaia-gap) block below.
+ */
+function branchWriteBody(branch, org, multiplierRangeIds, workAreaIds) {
   return {
+    name: branch.name,
+    address: branch.address || '',
+    phone: branch.phone || '',
+    timezone: branch.timezone || org.timezone,
+    multiplierRangeIds,
+    workAreaIds,
     baseHourlyRate: branch.baseHourlyRate,
     averageWorkDayHours: branch.averageWorkDayHours,
     wasteFactor: branch.wasteFactor,
-    creditCardFee: branch.creditCardFee,
     gasCost: branch.gasCost,
     truckAverageMPG: branch.truckAverageMPG,
     laborHoursLoadUnload: branch.laborHoursLoadUnload,
@@ -280,20 +282,7 @@ function branchBaseConstants(branch) {
     maxDiscount: branch.maxDiscount,
     depositPercent: branch.depositPercent,
     maxDepositAmount: branch.maxDepositAmount,
-    autoCreateDepositInvoice: false,
-    autoSendDepositInvoice: branch.autoSendDepositInvoice || false,
-    address: branch.address || '',
-    phone: branch.phone || '',
-    defaultProposalEmailSubject: branch.defaultProposalEmailSubject || '',
-    defaultProposalEmailBody: branch.defaultProposalEmailBody || '',
-    financePartnerUrl: branch.financePartnerUrl || '',
-    contractorLicense: branch.contractorLicense || '',
-    about: branch.about || '',
-    aboutVideoUrl: branch.aboutVideoUrl || '',
-    disclaimer: branch.disclaimer || '',
-    paymentTerms: branch.paymentTerms || '',
-    insuranceClaims: branch.insuranceClaims || '',
-    termsAndConditions: branch.termsAndConditions || '',
+    creditCardFee: branch.creditCardFee,
     minRetailPrice: branch.minRetailPrice,
     b2bMaxDiscount: branch.b2bMaxDiscount,
     qualityControlVisitPrice: branch.qualityControlVisitPrice,
@@ -301,7 +290,15 @@ function branchBaseConstants(branch) {
     bonusPayoutCutoff: branch.bonusPayoutCutoff,
     leaderboardColorPercentage: branch.leaderboardColorPercentage,
     maxOpenEstimates: branch.maxOpenEstimates,
-    financeFactors: { 3: branch.financeFactors_3, 6: branch.financeFactors_6, 12: branch.financeFactors_12 },
+    includeSubServicesInSalesPerformance: false,
+    // TODO(menaia-gap): the following branch-config fields the deployment used to
+    // write are NOT in Create/UpdateBranchSchema (packages/common/src/schemas/branch.ts)
+    // and have no /v1 endpoint, so they are dropped:
+    //   autoCreateDepositInvoice, autoSendDepositInvoice,
+    //   defaultProposalEmailSubject, defaultProposalEmailBody, financePartnerUrl,
+    //   contractorLicense, about, aboutVideoUrl, disclaimer, paymentTerms,
+    //   insuranceClaims, termsAndConditions, financeFactors (3/6/12),
+    //   and the config `name` (server names the configuration).
   };
 }
 
@@ -320,23 +317,54 @@ export async function deployOrg(org, options, onStep) {
 
   try {
     step('preflight', 'running');
-    const auth = await authenticate(options.credentials);
+    const auth = await authenticate(options.credentials, options.apiUrl);
     const organization = await resolveScopedOrganization(options.apiUrl, auth, options.expectedOrganizationId);
     const expectedConfirmation = `${organization.id}:${organization.slug || organization.domain || organization.name}`;
     if (options.confirmation !== expectedConfirmation) throw new Error(`Confirmation must exactly match "${expectedConfirmation}"`);
     validateOrgForDeployment(org);
-    const existing = await loadExisting(options.apiUrl, auth, organization.id);
+    const existing = await loadExisting(options.apiUrl, auth);
     const orgId = organization.id;
     step('preflight', 'done', `Scoped to organization ${organization.name} (${orgId})`);
 
+    // The API key scopes writes to the bound org, so the `organization` field is
+    // dropped from every write body.
     step('resources', 'running');
-    const factorIds = await upsertNamed(options.apiUrl, auth, 'factors', org.resources.factors, existing.factors, (item) => ({ ...item, organization: orgId }), (op, name, id) => action('factors', op, name, id));
-    const costIds = await upsertNamed(options.apiUrl, auth, 'additional-costs', org.resources.additionalCosts || [], existing.additionalCosts, (item) => ({ ...item, organization: orgId }), (op, name, id) => action('additional-costs', op, name, id));
-    const rangeIds = await upsertNamed(options.apiUrl, auth, 'multiplier-ranges', org.resources.multiplierRanges, existing.multiplierRanges, (item) => ({ ...item, organization: orgId }), (op, name, id) => action('multiplier-ranges', op, name, id));
+    const factorIds = await upsertNamed(options.apiUrl, auth, 'factors', org.resources.factors, existing.factors, (item) => ({
+      name: item.name,
+      factor: item.factor,
+      appliesTo: item.appliesTo,
+      alwaysEnabled: item.alwaysEnabled || false,
+    }), (op, name, id) => action('factors', op, name, id));
+    const costIds = await upsertNamed(options.apiUrl, auth, 'additional-costs', org.resources.additionalCosts || [], existing.additionalCosts, (item) => ({
+      name: item.name,
+      cost: item.cost,
+      appliesTo: item.appliesTo,
+    }), (op, name, id) => action('additional-costs', op, name, id));
+    const rangeIds = await upsertNamed(options.apiUrl, auth, 'multiplier-ranges', org.resources.multiplierRanges, existing.multiplierRanges, (item) => ({
+      name: item.name,
+      minCost: item.minCost,
+      maxCost: item.maxCost ?? null,
+      lowestMultiple: item.lowestMultiple,
+      highestMultiple: item.highestMultiple,
+    }), (op, name, id) => action('multiplier-ranges', op, name, id));
     step('resources', 'done');
 
+    // In /v1 an item carries `itemCategoryIds` (min 1 required) — the link is
+    // owned by the item, not the category — so categories must exist first.
+    step('catalog', 'running');
+    const categoryIds = await upsertNamed(options.apiUrl, auth, 'item-categories', org.resources.categories, existing.categories, (category) => ({
+      name: category.name,
+      factorIds: resolveIds(category.factorNames, factorIds),
+    }), (op, name, id) => action('item-categories', op, name, id));
+    step('catalog', 'done');
+
+    // Items are nested under a category in the draft; stamp each with its
+    // category id so the create satisfies the required `itemCategoryIds`.
     step('items', 'running');
-    const itemIds = await upsertNamed(options.apiUrl, auth, 'items', flatItems(org), existing.items, (item) => ({
+    const itemsWithCategory = org.resources.categories.flatMap((category) =>
+      (category.items || []).map((item) => ({ ...item, __categoryName: category.name })),
+    );
+    const itemIds = await upsertNamed(options.apiUrl, auth, 'items', itemsWithCategory, existing.items, (item) => ({
       name: item.name,
       itemInfo: item.itemInfo || item.notes || '',
       unit: item.unit,
@@ -345,62 +373,90 @@ export async function deployOrg(org, options, onStep) {
       multiplierOverride: item.multiplierOverride ?? null,
       subItem: item.subItem || false,
       requiresInfo: item.requiresInfo || false,
-      factors: resolveIds(item.factorNames, factorIds),
-      additional_costs: resolveIds(item.additionalCostNames, costIds),
-      organization: orgId,
+      factorIds: resolveIds(item.factorNames, factorIds),
+      additionalCostIds: resolveIds(item.additionalCostNames, costIds),
+      itemCategoryIds: [categoryIds[item.__categoryName]].filter(Boolean),
     }), (op, name, id) => action('items', op, name, id));
     step('items', 'done');
 
-    step('catalog', 'running');
-    const categoryIds = await upsertNamed(options.apiUrl, auth, 'item-categories', org.resources.categories, existing.categories, (category) => ({
-      name: category.name,
-      items: category.items.map((item) => itemIds[item.name]).filter(Boolean),
-      factors: resolveIds(category.factorNames, factorIds),
-      organization: orgId,
-    }), (op, name, id) => action('item-categories', op, name, id));
+    step('work-areas', 'running');
     const workAreaIds = await upsertNamed(options.apiUrl, auth, 'work-areas', org.resources.workAreas, existing.workAreas, (workArea) => ({
       name: workArea.name,
-      item_categories: resolveIds(workArea.categories, categoryIds),
-      factors: resolveIds(workArea.factorNames, factorIds),
-      organization: orgId,
+      itemCategoryIds: resolveIds(workArea.categories, categoryIds),
+      factorIds: resolveIds(workArea.factorNames, factorIds),
     }), (op, name, id) => action('work-areas', op, name, id));
-    step('catalog', 'done');
+    step('work-areas', 'done');
 
     step('branches', 'running');
+    const allRangeIds = Object.values(rangeIds);
+    const allWorkAreaIds = Object.values(workAreaIds);
     const existingBranches = nameMap(existing.branches);
     for (const branch of org.branches) {
       const match = existingBranches.get(branch.name.trim().toLowerCase());
-      const branchResult = match || await apiCall(options.apiUrl, auth, 'POST', '/branches', { name: branch.name, organization: orgId });
-      action('branches', match ? 'updated' : 'created', branch.name, branchResult.id);
-      const configurationId = branchResult.configuration?.id || branchResult.configuration;
-      if (!configurationId) throw new Error(`Branch "${branch.name}" did not return a configuration`);
-      await apiCall(options.apiUrl, auth, 'PATCH', `/branch-configurations/${configurationId}`, {
-        name: `${branch.name} Configuration`,
-        timezone: branch.timezone || org.timezone,
-        baseConstants: branchBaseConstants(branch),
-        multiplier_ranges: Object.values(rangeIds),
-        work_areas: Object.values(workAreaIds),
-        includeSubServicesInSalesPerformance: false,
-        organization: orgId,
-      });
-      action('branch-configurations', 'updated', `${branch.name} Configuration`, configurationId);
+      const body = branchWriteBody(branch, org, allRangeIds, allWorkAreaIds);
 
-      const scoped = { 'where[organization][equals]': String(orgId), 'where[branchConfiguration][equals]': String(configurationId) };
+      // POST /v1/branches creates the branch + configuration AND seeds default
+      // payment-methods/financing-terms/task-type in one call; the response
+      // (BranchResponseSchema) carries the populated `configuration` (+ its id).
+      // For an existing branch, PATCH /v1/branches/:id sets the full config
+      // (flat baseConstants + multiplierRangeIds + workAreaIds) via
+      // UpdateBranchSchema. CreateBranchSchema and UpdateBranchSchema are the
+      // same flat body, so one `branchWriteBody` serves both.
+      const branchResult = match
+        ? await apiCall(options.apiUrl, auth, 'PATCH', `/branches/${match.id}`, body)
+        : await apiCall(options.apiUrl, auth, 'POST', '/branches', body);
+      action('branches', match ? 'updated' : 'created', branch.name, branchResult.id);
+
+      const configurationId = branchResult.configuration?.id || branchResult.configurationId;
+      if (!configurationId) throw new Error(`Branch "${branch.name}" did not return a configuration`);
+
+      // create SEEDS default financing-terms/payment-methods, so reconcile with
+      // the seeded defaults (upsert-by-name) instead of blindly creating dupes.
       const [terms, methods] = await Promise.all([
-        listAll(options.apiUrl, auth, 'branch-financing-terms', scoped),
-        listAll(options.apiUrl, auth, 'branch-payment-methods', scoped),
+        listAll(options.apiUrl, auth, 'branch-financing-terms', { branchConfigurationId: String(configurationId) }),
+        listAll(options.apiUrl, auth, 'branch-payment-methods', { branchConfigurationId: String(configurationId) }),
       ]);
-      await upsertNamed(options.apiUrl, auth, 'branch-financing-terms', branch.branchFinancingTerms || [], terms, (term) => ({ ...term, branchConfiguration: configurationId, organization: orgId }), (op, name, id) => action('branch-financing-terms', op, name, id));
+
+      // Financing terms are unique per (config, termMonths) and `create` already
+      // seeded some — so reconcile by termMonths, not name, to avoid 409s.
+      const termsByMonths = new Map(terms.map((t) => [Number(t.termMonths), t]));
+      for (const term of branch.branchFinancingTerms || []) {
+        const existingTerm = termsByMonths.get(Number(term.termMonths));
+        const fields = {
+          name: term.name,
+          termMonths: term.termMonths,
+          interestRate: term.interestRate,
+          mostPopular: term.mostPopular || false,
+        };
+        const result = existingTerm
+          ? await apiCall(options.apiUrl, auth, 'PATCH', `/branch-financing-terms/${existingTerm.id}`, fields)
+          : await apiCall(options.apiUrl, auth, 'POST', '/branch-financing-terms', { branchConfigurationId: configurationId, ...fields });
+        action('branch-financing-terms', existingTerm ? 'updated' : 'created', term.name, result.id);
+      }
+
+      // Payment methods are keyed by `label`; map onto the upsert's `name` key.
       const desiredMethods = (branch.branchPaymentMethods || []).map((method) => ({ ...method, name: method.label }));
-      await upsertNamed(options.apiUrl, auth, 'branch-payment-methods', desiredMethods, methods.map((method) => ({ ...method, name: method.label })), (method) => ({
-        label: method.label,
-        type: method.type,
-        icon: method.icon,
-        enabled: method.enabled,
-        sortOrder: method.sortOrder,
-        branchConfiguration: configurationId,
-        organization: orgId,
-      }), (op, name, id) => action('branch-payment-methods', op, name, id));
+      const existingMethods = methods.map((method) => ({ ...method, name: method.label }));
+      await upsertNamed(options.apiUrl, auth, 'branch-payment-methods', desiredMethods, existingMethods, (method, existingMethod) => {
+        const isFinancing = method.isFinancing ?? method.type === 'financing';
+        return existingMethod
+          ? {
+              // UpdateBranchPaymentMethodSchema: non-partial, no branchConfigurationId.
+              label: method.label,
+              isFinancing,
+              icon: method.icon,
+              enabled: method.enabled ?? true,
+              sortOrder: method.sortOrder ?? 0,
+            }
+          : {
+              label: method.label,
+              isFinancing,
+              icon: method.icon,
+              enabled: method.enabled ?? true,
+              sortOrder: method.sortOrder ?? 0,
+              branchConfigurationId: configurationId,
+            };
+      }, (op, name, id) => action('branch-payment-methods', op, name, id));
     }
     step('branches', 'done');
     step('complete', 'done', `Upserted ${actions.length} records inside ${organization.name}`);

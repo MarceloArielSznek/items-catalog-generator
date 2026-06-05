@@ -583,18 +583,14 @@ function deploymentOptions(body) {
     expectedOrganizationId: body.expectedOrganizationId,
     confirmation: body.confirmation,
     credentials: {
-      email: body.email,
-      password: body.password,
-      supabaseUrl: body.supabaseUrl,
-      publishableKey: body.publishableKey,
-      vercelToken: body.vercelToken,
+      apiKey: body.apiKey,
     },
   };
 }
 
 function validateDeploymentRequest(body) {
-  if (!body.apiUrl || !body.email || !body.password) {
-    return 'apiUrl, email, and password are required';
+  if (!body.apiUrl || !body.apiKey) {
+    return 'apiUrl and apiKey are required';
   }
   return null;
 }
