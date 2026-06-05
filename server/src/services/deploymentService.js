@@ -1,7 +1,84 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import env from '../config/env.js';
 import logger from '../utils/logger.js';
 
 const PAGE_LIMIT = 100;
+
+// Standard onboarding defaults. These are FIXED canonical lists (NOT sourced
+// from the per-org draft) — every freshly deployed org gets the same set. All
+// creation below is idempotent (reconcile against existing via listAll) and
+// resilient (per-row try/catch, never aborting the deploy).
+const DEFAULT_LEAD_STATUSES = [
+  { name: 'New', slug: 'new', order: 1, category: 'new', color: 'info' },
+  { name: 'In Progress', slug: 'in-progress', order: 2, category: 'in-progress', color: 'fuchsia' },
+  { name: 'Scheduled', slug: 'scheduled', order: 3, category: 'in-progress', color: 'accent' },
+  { name: 'Lost', slug: 'lost', order: 5, category: 'cancelled', color: 'error' },
+  { name: 'Sold', slug: 'sold', order: 6, category: 'done', color: 'success' },
+];
+
+const DEFAULT_TAGS = ['Hot Lead', 'Follow-up', 'Referral'];
+
+const DEFAULT_LEAD_SOURCES = [
+  { name: 'Google Organic', slug: 'google-organic', sortOrder: 0, isDefault: true },
+  { name: 'Bing Organic', slug: 'bing-organic', sortOrder: 1 },
+  { name: 'Yahoo Organic', slug: 'yahoo-organic', sortOrder: 2 },
+  { name: 'Google Ads', slug: 'google-ads', sortOrder: 3 },
+  { name: 'Bing Ads', slug: 'bing-ads', sortOrder: 4 },
+  { name: 'Yelp', slug: 'yelp', sortOrder: 5 },
+  { name: 'AI Search Engine', slug: 'ai-search-engine', sortOrder: 6 },
+  { name: 'Facebook Ads', slug: 'facebook-ads', sortOrder: 7 },
+  { name: 'Direct Traffic', slug: 'direct-traffic', sortOrder: 8 },
+  { name: 'Cold Call', slug: 'cold-call', sortOrder: 9 },
+  { name: 'Email', slug: 'email', sortOrder: 10 },
+  { name: 'ThumbTack', slug: 'thumbtack', sortOrder: 11 },
+  { name: 'Canvasser/D2D', slug: 'canvasserd2d', sortOrder: 12 },
+  { name: 'B2B Referral', slug: 'b2b-referral', sortOrder: 13, internalReferralInfo: 'required' },
+  { name: 'Self Generated', slug: 'self-generated', sortOrder: 14, internalReferralInfo: 'required', externalReferralInfo: 'optional' },
+  { name: 'Social Media', slug: 'social-media', sortOrder: 15 },
+  { name: 'Home Show', slug: 'home-show', sortOrder: 16 },
+  { name: 'Other', slug: 'other', sortOrder: 17 },
+];
+
+// NOTE: the API enum only accepts `invoice_void_reason` and
+// `invoice_credit_reason` (credit_note_void reasons are intentionally omitted).
+const DEFAULT_REASON_CODES = [
+  { reasonType: 'invoice_void_reason', name: 'Duplicate Invoice', description: 'Invoice was created in error as a duplicate of an existing invoice.', sortOrder: 0 },
+  { reasonType: 'invoice_void_reason', name: 'Incorrect Amount', description: 'The invoiced amount does not match the agreed-upon pricing.', sortOrder: 1 },
+  { reasonType: 'invoice_void_reason', name: 'Customer Dispute', description: 'Customer has disputed the charges and invoice is being voided pending resolution.', sortOrder: 2 },
+  { reasonType: 'invoice_void_reason', name: 'Job Cancelled', description: 'The associated job was cancelled before completion.', sortOrder: 3 },
+  { reasonType: 'invoice_void_reason', name: 'Billing Error', description: 'Invoice was issued to the wrong client or project.', sortOrder: 4 },
+  { reasonType: 'invoice_credit_reason', name: 'Goodwill Adjustment', description: 'Credit issued as a goodwill gesture to maintain client relationship.', sortOrder: 0 },
+  { reasonType: 'invoice_credit_reason', name: 'Scope Reduction', description: 'Work scope was reduced after the original invoice was issued.', sortOrder: 1 },
+  { reasonType: 'invoice_credit_reason', name: 'Quality Issue', description: 'Credit issued due to a quality concern reported by the client.', sortOrder: 2 },
+  { reasonType: 'invoice_credit_reason', name: 'Pricing Error', description: 'The original invoice contained a pricing mistake that needs correction.', sortOrder: 3 },
+  { reasonType: 'invoice_credit_reason', name: 'Promotional Discount', description: 'Post-invoice discount applied for a promotional offer.', sortOrder: 4 },
+];
+
+const DEFAULT_PAYMENT_TERMS = [
+  { name: 'Due on Receipt', daysUntilDue: 0, isDefault: true },
+  { name: 'Net 15', daysUntilDue: 15 },
+  { name: 'Net 30', daysUntilDue: 30 },
+  { name: 'Net 45', daysUntilDue: 45 },
+  { name: 'Net 60', daysUntilDue: 60 },
+];
+
+// Locally-enriched item images live at generated-orgs/media/<slug>/<key>.jpg.
+// The key derivation MIRRORS orgRoutes.imageKey — keep the two in sync.
+const MEDIA_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../generated-orgs/media');
+function imageKey(categoryName, itemName) {
+  const safe = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+  return `${safe(categoryName)}__${safe(itemName)}`;
+}
+
+function humanize(s) {
+  return String(s || '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+function slugify(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
 
 // Menaia NestJS API base. The per-target org's `apiUrl` already points at the
 // API host; we append `/v1` (the versioned API namespace) here.
@@ -226,10 +303,19 @@ export async function preflightOrgDeployment(org, options) {
       update: out.update + collection.update.length,
       untouched: out.untouched + collection.untouched,
     }), { create: 0, update: 0, untouched: 0 }),
-    deferred: {
-      users: org.users?.length || 0,
+    // What the deploy ALSO provisions beyond the price book above (onboarding
+    // defaults + draft fleet/users). Counts of what will be created on a fresh
+    // org; re-deploys reconcile and skip existing.
+    additional: {
+      leadStatuses: DEFAULT_LEAD_STATUSES.length,
+      tags: DEFAULT_TAGS.length,
+      leadSources: DEFAULT_LEAD_SOURCES.length,
+      reasonCodes: DEFAULT_REASON_CODES.length,
+      vehicleTypes: new Set((org.resources.vehicleTemplates || []).map((v) => v.type)).size,
       vehicles: org.resources.vehicleTemplates?.length || 0,
       equipmentTypes: org.resources.equipmentTypes?.length || 0,
+      users: org.users?.length || 0,
+      paymentTerms: DEFAULT_PAYMENT_TERMS.length * (org.branches?.length || 0),
       images: flatItems(org).filter((item) => item.imageUrl).length,
     },
   };
@@ -260,8 +346,9 @@ async function upsertNamed(baseUrl, auth, collection, desired, existing, bodyFn,
  * BOTH `POST /v1/branches` and `PATCH /v1/branches/:id`. `multiplierRangeIds`
  * and `workAreaIds` carry the configuration's relations.
  *
- * NOTE: several legacy branch-config fields are NOT in Create/UpdateBranchSchema
- * and are intentionally omitted — see the TODO(menaia-gap) block below.
+ * NOTE: proposal-content + invoice-automation fields are NOT in this schema;
+ * they're written via dedicated /branch-configurations sub-routes in the
+ * branch loop (see the block at the end of this function).
  */
 function branchWriteBody(branch, org, multiplierRangeIds, workAreaIds) {
   return {
@@ -291,20 +378,35 @@ function branchWriteBody(branch, org, multiplierRangeIds, workAreaIds) {
     leaderboardColorPercentage: branch.leaderboardColorPercentage,
     maxOpenEstimates: branch.maxOpenEstimates,
     includeSubServicesInSalesPerformance: false,
-    // TODO(menaia-gap): the following branch-config fields the deployment used to
-    // write are NOT in Create/UpdateBranchSchema (packages/common/src/schemas/branch.ts)
-    // and have no /v1 endpoint, so they are dropped:
-    //   autoCreateDepositInvoice, autoSendDepositInvoice,
-    //   defaultProposalEmailSubject, defaultProposalEmailBody, financePartnerUrl,
-    //   contractorLicense, about, aboutVideoUrl, disclaimer, paymentTerms,
-    //   insuranceClaims, termsAndConditions, financeFactors (3/6/12),
-    //   and the config `name` (server names the configuration).
+    // Proposal content (defaultProposalEmailSubject/Body, financePartnerUrl,
+    // contractorLicense, about, aboutVideoUrl, disclaimer, paymentTerms,
+    // insuranceClaims, termsAndConditions) and invoice automations
+    // (autoCreateDepositInvoice, autoSendDepositInvoice) are NOT in
+    // Create/UpdateBranchSchema — they're written separately in the branch loop
+    // via PATCH /branch-configurations/:id/proposal-content and /invoice-automations.
+    // The config `name` is set server-side.
   };
+}
+
+// Two-step item-media upload (presign → PUT bytes to S3 → register, which
+// auto-attaches), using the per-target deploy auth.
+async function uploadItemImage(baseUrl, auth, itemId, fileBuffer, filename) {
+  const filesize = fileBuffer.length;
+  const presign = await apiCall(baseUrl, auth, 'POST', `/items/${itemId}/media/upload-url`, {
+    mimeType: 'image/jpeg', originalFilename: filename, filesize,
+  });
+  const put = await fetch(presign.uploadUrl, { method: 'PUT', headers: presign.uploadHeaders, body: fileBuffer });
+  if (!put.ok) throw new Error(`media PUT failed (${put.status})`);
+  const registered = await apiCall(baseUrl, auth, 'POST', `/items/${itemId}/media/register`, {
+    prefix: presign.prefix, filename: presign.filename, mimeType: 'image/jpeg', filesize,
+  });
+  return registered?.mediaId;
 }
 
 export async function deployOrg(org, options, onStep) {
   const log = [];
   const actions = [];
+  const credentials = [];
   function step(name, status, detail = '') {
     const entry = { name, status, detail, ts: new Date().toISOString() };
     log.push(entry);
@@ -325,6 +427,83 @@ export async function deployOrg(org, options, onStep) {
     const existing = await loadExisting(options.apiUrl, auth);
     const orgId = organization.id;
     step('preflight', 'done', `Scoped to organization ${organization.name} (${orgId})`);
+
+    // Standard onboarding defaults (fixed canonical lists, see module constants).
+    // Idempotent: reconcile against existing via listAll, skip dupes, else POST.
+    // Resilient: each row is wrapped in try/catch that logs + continues so a
+    // single bad row never aborts the deploy.
+    step('onboarding', 'running');
+    let onboardingCount = 0;
+
+    // 1. Lead statuses — dedupe by slug.
+    const existingLeadStatuses = await listAll(options.apiUrl, auth, 'lead-statuses');
+    const leadStatusSlugs = new Set(existingLeadStatuses.map((doc) => doc.slug));
+    for (const status of DEFAULT_LEAD_STATUSES) {
+      if (leadStatusSlugs.has(status.slug)) continue;
+      try {
+        const result = await apiCall(options.apiUrl, auth, 'POST', '/lead-statuses', { ...status });
+        action('lead-statuses', 'created', status.name, result.id);
+        onboardingCount += 1;
+      } catch (err) {
+        step('onboarding', 'running', `skipped lead-status ${status.name}: ${err.message}`);
+      }
+    }
+
+    // 2. Tags — dedupe by name.
+    const existingTags = await listAll(options.apiUrl, auth, 'tags');
+    const tagNames = new Set(existingTags.map((doc) => String(doc.name || '').trim().toLowerCase()));
+    for (const tag of DEFAULT_TAGS) {
+      if (tagNames.has(tag.trim().toLowerCase())) continue;
+      try {
+        const result = await apiCall(options.apiUrl, auth, 'POST', '/tags', { name: tag, type: 'lead' });
+        action('tags', 'created', tag, result.id);
+        onboardingCount += 1;
+      } catch (err) {
+        step('onboarding', 'running', `skipped tag ${tag}: ${err.message}`);
+      }
+    }
+
+    // 3. Lead sources — dedupe by slug.
+    const existingLeadSources = await listAll(options.apiUrl, auth, 'lead-sources');
+    const leadSourceSlugs = new Set(existingLeadSources.map((doc) => doc.slug));
+    for (const source of DEFAULT_LEAD_SOURCES) {
+      if (leadSourceSlugs.has(source.slug)) continue;
+      try {
+        const result = await apiCall(options.apiUrl, auth, 'POST', '/lead-sources', {
+          ...source,
+          isDefault: source.isDefault ?? false,
+          internalReferralInfo: source.internalReferralInfo ?? 'none',
+          externalReferralInfo: source.externalReferralInfo ?? 'none',
+        });
+        action('lead-sources', 'created', source.name, result.id);
+        onboardingCount += 1;
+      } catch (err) {
+        step('onboarding', 'running', `skipped lead-source ${source.name}: ${err.message}`);
+      }
+    }
+
+    // 4. Accounting reason codes — dedupe by (reasonType, name).
+    const existingReasonCodes = await listAll(options.apiUrl, auth, 'accounting-reason-codes');
+    const reasonCodeKeys = new Set(
+      existingReasonCodes.map((doc) => `${doc.reasonType}::${String(doc.name || '').trim().toLowerCase()}`),
+    );
+    for (const code of DEFAULT_REASON_CODES) {
+      const key = `${code.reasonType}::${code.name.trim().toLowerCase()}`;
+      if (reasonCodeKeys.has(key)) continue;
+      try {
+        const result = await apiCall(options.apiUrl, auth, 'POST', '/accounting-reason-codes', {
+          reasonType: code.reasonType,
+          name: code.name,
+          description: code.description,
+          sortOrder: code.sortOrder,
+        });
+        action('accounting-reason-codes', 'created', code.name, result.id);
+        onboardingCount += 1;
+      } catch (err) {
+        step('onboarding', 'running', `skipped reason-code ${code.name}: ${err.message}`);
+      }
+    }
+    step('onboarding', 'done', `${onboardingCount} onboarding default(s) created`);
 
     // The API key scopes writes to the bound org, so the `organization` field is
     // dropped from every write body.
@@ -382,6 +561,24 @@ export async function deployOrg(org, options, onStep) {
     }), (op, name, id) => action('items', op, name, id));
     step('items', 'done');
 
+    // Upload locally-enriched item images (generated-orgs/media/<slug>/...).
+    // Per-image failures are skipped, not fatal, so the deploy still completes.
+    step('images', 'running');
+    let imageCount = 0;
+    for (const item of itemsWithCategory) {
+      const itemId = itemIds[item.name];
+      const file = path.join(MEDIA_ROOT, org.slug, `${imageKey(item.__categoryName, item.name)}.jpg`);
+      if (!itemId || !fs.existsSync(file)) continue;
+      try {
+        const mediaId = await uploadItemImage(options.apiUrl, auth, itemId, fs.readFileSync(file), `${item.name}.jpg`);
+        action('item-media', 'created', item.name, mediaId);
+        imageCount += 1;
+      } catch (err) {
+        step('images', 'running', `skipped ${item.name}: ${err.message}`);
+      }
+    }
+    step('images', 'done', `${imageCount} image(s) uploaded`);
+
     step('work-areas', 'running');
     const workAreaIds = await upsertNamed(options.apiUrl, auth, 'work-areas', org.resources.workAreas, existing.workAreas, (workArea) => ({
       name: workArea.name,
@@ -394,6 +591,7 @@ export async function deployOrg(org, options, onStep) {
     const allRangeIds = Object.values(rangeIds);
     const allWorkAreaIds = Object.values(workAreaIds);
     const existingBranches = nameMap(existing.branches);
+    const branchIdsByName = {};
     for (const branch of org.branches) {
       const match = existingBranches.get(branch.name.trim().toLowerCase());
       const body = branchWriteBody(branch, org, allRangeIds, allWorkAreaIds);
@@ -409,6 +607,7 @@ export async function deployOrg(org, options, onStep) {
         ? await apiCall(options.apiUrl, auth, 'PATCH', `/branches/${match.id}`, body)
         : await apiCall(options.apiUrl, auth, 'POST', '/branches', body);
       action('branches', match ? 'updated' : 'created', branch.name, branchResult.id);
+      branchIdsByName[branch.name] = branchResult.id;
 
       const configurationId = branchResult.configuration?.id || branchResult.configurationId;
       if (!configurationId) throw new Error(`Branch "${branch.name}" did not return a configuration`);
@@ -460,12 +659,164 @@ export async function deployOrg(org, options, onStep) {
               branchConfigurationId: configurationId,
             };
       }, (op, name, id) => action('branch-payment-methods', op, name, id));
+
+      // Branch-config content the create/update body doesn't carry: proposal
+      // content (all 10 fields required) + invoice automations. Separate /v1
+      // sub-routes, gated on manage:WorkspaceSettings (service-accessible).
+      await apiCall(options.apiUrl, auth, 'PATCH', `/branch-configurations/${configurationId}/proposal-content`, {
+        defaultProposalEmailSubject: branch.defaultProposalEmailSubject ?? '',
+        defaultProposalEmailBody: branch.defaultProposalEmailBody ?? '',
+        financePartnerUrl: branch.financePartnerUrl ?? '',
+        contractorLicense: branch.contractorLicense ?? '',
+        about: branch.about ?? '',
+        aboutVideoUrl: branch.aboutVideoUrl ?? '',
+        disclaimer: branch.disclaimer ?? '',
+        paymentTerms: branch.paymentTerms ?? '',
+        insuranceClaims: branch.insuranceClaims ?? '',
+        termsAndConditions: branch.termsAndConditions ?? '',
+      });
+      action('branch-configurations', 'updated', `${branch.name} proposal content`, configurationId);
+
+      await apiCall(options.apiUrl, auth, 'PATCH', `/branch-configurations/${configurationId}/invoice-automations`, {
+        autoCreateDepositInvoice: branch.autoCreateDepositInvoice ?? false,
+        autoSendDepositInvoice: branch.autoSendDepositInvoice ?? false,
+      });
+      action('branch-configurations', 'updated', `${branch.name} invoice automations`, configurationId);
+
+      // Standard payment terms (fixed canonical list) per branch configuration.
+      // Idempotent: reconcile against existing config terms via listAll, dedupe
+      // by name. Resilient: per-term try/catch logs + continues.
+      const existingPaymentTerms = await listAll(options.apiUrl, auth, 'payment-terms', { branchConfigurationId: String(configurationId) });
+      const paymentTermNames = new Set(existingPaymentTerms.map((doc) => String(doc.name || '').trim().toLowerCase()));
+      for (const term of DEFAULT_PAYMENT_TERMS) {
+        if (paymentTermNames.has(term.name.trim().toLowerCase())) continue;
+        try {
+          const result = await apiCall(options.apiUrl, auth, 'POST', '/payment-terms', {
+            name: term.name,
+            daysUntilDue: term.daysUntilDue,
+            isDefault: term.isDefault ?? false,
+            branchConfigurationId: configurationId,
+          });
+          action('payment-terms', 'created', term.name, result.id);
+        } catch (err) {
+          step('branches', 'running', `skipped payment-term ${term.name} for ${branch.name}: ${err.message}`);
+        }
+      }
     }
     step('branches', 'done');
+
+    // Vehicle-types/vehicles, equipment-types, and users are all branch-scoped
+    // (or branch-referencing), so they require at least one deployed branch.
+    const firstBranchId = Object.values(branchIdsByName)[0];
+    if (firstBranchId) {
+      // --- Vehicles ---------------------------------------------------------
+      step('vehicles', 'running');
+      const vehicleTemplates = org.resources.vehicleTemplates || [];
+      const existingVehicleTypes = await listAll(options.apiUrl, auth, 'vehicle-types', { branch: String(firstBranchId) });
+      const typeToId = {};
+      for (const type of new Set(vehicleTemplates.map((t) => t.type))) {
+        const slug = slugify(type);
+        const existing = existingVehicleTypes.find((vt) => vt.slug === slug);
+        if (existing) {
+          typeToId[type] = existing.id;
+          action('vehicle-types', 'untouched', existing.name, existing.id);
+        } else {
+          const created = await apiCall(options.apiUrl, auth, 'POST', '/vehicle-types', {
+            branch: firstBranchId,
+            name: humanize(type),
+            slug,
+          });
+          typeToId[type] = created.id;
+          action('vehicle-types', 'created', created.name, created.id);
+        }
+      }
+      let vehicleCount = 0;
+      for (let i = 0; i < vehicleTemplates.length; i++) {
+        const t = vehicleTemplates[i];
+        const name = `${t.make ?? ''} ${t.model ?? ''}`.trim() || humanize(t.type);
+        try {
+          const result = await apiCall(options.apiUrl, auth, 'POST', '/vehicles', {
+            name,
+            type: typeToId[t.type],
+            branch: firstBranchId,
+            licensePlate: `FLEET${String(i + 1).padStart(2, '0')}`,
+            make: t.make,
+            model: t.model,
+            year: t.year,
+          });
+          action('vehicles', 'created', name, result.id);
+          vehicleCount += 1;
+        } catch (err) {
+          step('vehicles', 'running', `skipped ${name}: ${err.message}`);
+        }
+      }
+      step('vehicles', 'done', `${vehicleCount} vehicle(s)`);
+
+      // --- Equipment --------------------------------------------------------
+      step('equipment', 'running');
+      const equipmentTypes = org.resources.equipmentTypes || [];
+      const existingEquipmentTypes = await listAll(options.apiUrl, auth, 'equipment-types', { branch: String(firstBranchId) });
+      for (const str of equipmentTypes) {
+        const slug = slugify(str);
+        const name = humanize(str);
+        try {
+          const existing = existingEquipmentTypes.find((et) => et.slug === slug);
+          if (existing) {
+            action('equipment-types', 'untouched', existing.name, existing.id);
+          } else {
+            const created = await apiCall(options.apiUrl, auth, 'POST', '/equipment-types', {
+              branch: firstBranchId,
+              name,
+              slug,
+            });
+            action('equipment-types', 'created', created.name, created.id);
+          }
+        } catch (err) {
+          step('equipment', 'running', `skipped ${name}: ${err.message}`);
+        }
+      }
+      step('equipment', 'done');
+    }
+
+    // --- Users --------------------------------------------------------------
+    step('users', 'running');
+    const roles = await listAll(options.apiUrl, auth, 'roles', {});
+    const roleByName = {};
+    for (const role of roles) roleByName[String(role.name || '').toLowerCase()] = role.id;
+    let userCount = 0;
+    for (const user of org.users || []) {
+      const roleId = roleByName[String(user.role).toLowerCase()];
+      const branchIds = (user.branches || []).map((n) => branchIdsByName[n]).filter(Boolean);
+      if (!roleId || branchIds.length === 0) {
+        step('users', 'running', `skipped ${user.email}: unresolved role/branches`);
+        continue;
+      }
+      // The API requires passwords >= 8 chars; the generator emits short ones
+      // for short role names (e.g. "Ops123!" = 7). Pad to satisfy the rule.
+      const password = (user.password || '').length >= 8
+        ? user.password
+        : (user.password || 'Password').padEnd(8, '0');
+      try {
+        const result = await apiCall(options.apiUrl, auth, 'POST', '/user-admins', {
+          email: user.email,
+          name: user.name,
+          password,
+          roleIds: [roleId],
+          branchIds,
+        });
+        action('users', 'created', user.email, result.id);
+        credentials.push({ email: user.email, password, role: user.role });
+        userCount += 1;
+      } catch (err) {
+        step('users', 'running', `skipped ${user.email}: ${err.message}`);
+      }
+    }
+    step('users', 'done', `${userCount} user(s)`);
+
     step('complete', 'done', `Upserted ${actions.length} records inside ${organization.name}`);
-    return { success: true, log, actions, organizationId: orgId, actor: auth.user };
+    return { success: true, log, actions, credentials, organizationId: orgId, actor: auth.user };
   } catch (err) {
     step('error', 'failed', err.message);
-    return { success: false, log, actions, error: err.message };
+    return { success: false, log, actions, credentials, error: err.message };
   }
 }

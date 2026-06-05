@@ -404,7 +404,7 @@ function DeploySection({ slug, status, onDeployed }) {
         confirmation,
       }));
       setLog(res.log || []);
-      setResult({ success: true });
+      setResult({ success: true, credentials: res.credentials || [] });
       onDeployed?.();
     } catch (e) {
       setResult({ success: false, error: e.message });
@@ -476,7 +476,7 @@ function DeploySection({ slug, status, onDeployed }) {
               ))}
             </div>
             <div className="deploy-plan__deferred">
-              Deferred: {plan.deferred.users} users, {plan.deferred.vehicles} vehicles, {plan.deferred.equipmentTypes} equipment types, {plan.deferred.images} images.
+              Also provisions: {plan.additional.leadStatuses} lead statuses, {plan.additional.tags} tags, {plan.additional.leadSources} lead sources, {plan.additional.reasonCodes} reason codes, {plan.additional.vehicleTypes} vehicle types, {plan.additional.vehicles} vehicles, {plan.additional.equipmentTypes} equipment types, {plan.additional.users} users, {plan.additional.paymentTerms} payment terms, {plan.additional.images} item images.
             </div>
             <div className="form-row">
               <label className="form-label">Type <code>{plan.confirmation}</code> to confirm this target</label>
@@ -503,6 +503,18 @@ function DeploySection({ slug, status, onDeployed }) {
         {result && (
           <div className={`deploy-result ${result.success ? "deploy-result--success" : "deploy-result--error"}`}>
             {result.success ? "✓ Deployed successfully" : `✗ ${result.error}`}
+          </div>
+        )}
+        {result?.success && result.credentials?.length > 0 && (
+          <div className="deploy-credentials">
+            <strong>User credentials ({result.credentials.length}) — copy these now:</strong>
+            <ul>
+              {result.credentials.map((c) => (
+                <li key={c.email}>
+                  <code>{c.email}</code> / <code>{c.password}</code> — {c.role}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </div>
