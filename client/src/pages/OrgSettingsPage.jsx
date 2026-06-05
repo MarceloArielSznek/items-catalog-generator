@@ -840,37 +840,50 @@ function QueuePanel({ queue, running, onStop, onClear, onClose }) {
 
 function SelectionToolbar({ count, running, onAddToQueue, onClearSelection }) {
   const [mode, setMode] = useState("web");
+  const [comment, setComment] = useState("");
   const selectedMode = QUEUE_MODES.find((m) => m.id === mode);
+  const isGenerate = selectedMode?.mode === "generate";
 
   return (
     <div className="selection-toolbar">
-      <span className="selection-toolbar__count">
-        {count} item{count !== 1 ? "s" : ""} selected
-      </span>
-      <div className="selection-toolbar__modes">
-        {QUEUE_MODES.map((m) => (
-          <button
-            key={m.id}
-            className={`sel-mode-btn ${mode === m.id ? "sel-mode-btn--active" : ""}`}
-            onClick={() => setMode(m.id)}
-            title={m.sub}
-          >
-            {m.label}
-            <span className="sel-mode-btn__sub">{m.sub}</span>
-          </button>
-        ))}
+      <div className="selection-toolbar__row">
+        <span className="selection-toolbar__count">
+          {count} item{count !== 1 ? "s" : ""} selected
+        </span>
+        <div className="selection-toolbar__modes">
+          {QUEUE_MODES.map((m) => (
+            <button
+              key={m.id}
+              className={`sel-mode-btn ${mode === m.id ? "sel-mode-btn--active" : ""}`}
+              onClick={() => setMode(m.id)}
+              title={m.sub}
+            >
+              {m.label}
+              <span className="sel-mode-btn__sub">{m.sub}</span>
+            </button>
+          ))}
+        </div>
+        <button
+          className="btn btn--primary btn--sm"
+          onClick={() => onAddToQueue({ ...selectedMode, comment: isGenerate ? comment.trim() : "" })}
+          disabled={running}
+          title={running ? "Queue is running — wait or stop it first" : ""}
+        >
+          {running ? "Queue running…" : "Add to Queue →"}
+        </button>
+        <button className="btn btn--secondary btn--sm" onClick={onClearSelection}>
+          Clear
+        </button>
       </div>
-      <button
-        className="btn btn--primary btn--sm"
-        onClick={() => onAddToQueue(selectedMode)}
-        disabled={running}
-        title={running ? "Queue is running — wait or stop it first" : ""}
-      >
-        {running ? "Queue running…" : "Add to Queue →"}
-      </button>
-      <button className="btn btn--secondary btn--sm" onClick={onClearSelection}>
-        Clear
-      </button>
+      {isGenerate && (
+        <textarea
+          className="selection-toolbar__comment"
+          rows={2}
+          placeholder={`Avoid / negative prompt — applies to this queue. e.g. "no open windows in attics, no oversized crawl spaces"`}
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+        />
+      )}
     </div>
   );
 }
@@ -880,6 +893,7 @@ function BulkGenerateModal({ slug, cat, orgContext, onClose, onDone }) {
   const [mode, setMode] = useState("web");
   const [aiModelId, setAiModelId] = useState("openai-draft");
   const [overwrite, setOverwrite] = useState(false);
+  const [comment, setComment] = useState("");
   const [phase, setPhase] = useState("config"); // config | running | done
 
   // Live item state — tracks image + status per item
@@ -913,6 +927,7 @@ function BulkGenerateModal({ slug, cat, orgContext, onClose, onDone }) {
         model: aiModel?.model,
         quality: aiModel?.quality,
         overwrite,
+        comment: mode === "generate" ? comment.trim() : "",
         onProgress: (data) => {
           patchItem(data.item, {
             status: data.status,
@@ -996,6 +1011,22 @@ function BulkGenerateModal({ slug, cat, orgContext, onClose, onDone }) {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Negative-prompt comment — applies to this run only */}
+            {mode === "generate" && (
+              <div className="bgi-comment">
+                <label className="bgi-comment__label">
+                  Avoid / negative prompt <span className="bgi-comment__hint">applies to this run only</span>
+                </label>
+                <textarea
+                  className="settings-textarea"
+                  rows={2}
+                  placeholder={`Call out unrealistic things you keep seeing, e.g. "no open windows in attics, no oversized crawl spaces, no glossy showroom floors"`}
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                />
               </div>
             )}
 
@@ -1773,6 +1804,7 @@ function PriceBookPanel({ org, onSaved }) {
             provider: mode.provider,
             model: mode.model,
             quality: mode.quality,
+            comment: mode.comment || "",
           });
           imageUrl = res.imageUrl;
         }

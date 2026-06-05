@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { crawlWebsite, generateSeed, parseXlsx } from "../services/seedApi.js";
+import { crawlWebsite, crawlDemo, generateSeed, parseXlsx } from "../services/seedApi.js";
+import { setLogoPlaceholder } from "../services/orgApi.js";
 import "../styles/SeedGeneratorPage.css";
 
 const TIMEZONES = [
@@ -39,19 +40,27 @@ function slugify(name) {
 
 // ── Step 1: Company Info ─────────────────────────────────────────────────────
 function StepCompanyInfo({ onNext }) {
+  const [mode, setMode] = useState("real"); // "real" | "demo"
   const [form, setForm] = useState({
     companyName: "",
     companyWebsite: "",
     timezone: "America/Los_Angeles",
   });
+  const [demoUrls, setDemoUrls] = useState([""]);
+  const [demoBranchCount, setDemoBranchCount] = useState(1);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("");
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError("");
+  const addUrl = () => setDemoUrls([...demoUrls, ""]);
+  const removeUrl = (i) => setDemoUrls(demoUrls.filter((_, idx) => idx !== i));
+  const updateUrl = (i, value) => {
+    const updated = [...demoUrls];
+    updated[i] = value;
+    setDemoUrls(updated);
+  };
 
+  const submitReal = async () => {
     if (!form.companyName.trim()) return setError("Company name is required");
     if (!form.companyWebsite.trim()) return setError("Website URL is required");
     try { new URL(form.companyWebsite); } catch {
@@ -60,12 +69,11 @@ function StepCompanyInfo({ onNext }) {
 
     setLoading(true);
     setStatus("Crawling website… (30–60 seconds)");
-
     try {
       const result = await crawlWebsite(form.companyWebsite);
       const slug = slugify(form.companyName);
       onNext({
-        companyInfo: { ...form, slug, domain: slug },
+        companyInfo: { ...form, slug, domain: slug, isDemo: false },
         extracted: { ...result.extracted, companyName: form.companyName },
         pagesCount: result.pagesCount,
       });
@@ -77,33 +85,126 @@ function StepCompanyInfo({ onNext }) {
     }
   };
 
+  const submitDemo = async () => {
+    const urls = demoUrls.map((u) => u.trim()).filter(Boolean);
+    if (urls.length === 0) return setError("Add at least one company URL");
+    for (const u of urls) {
+      try { new URL(u); } catch { return setError(`Invalid URL: ${u}`); }
+    }
+
+    setLoading(true);
+    setStatus(`Crawling ${urls.length} site${urls.length > 1 ? "s" : ""} and inventing a demo identity… (1–2 min)`);
+    try {
+      const result = await crawlDemo(urls, demoBranchCount);
+      const slug = result.slug || slugify(result.extracted.companyName);
+      onNext({
+        companyInfo: {
+          companyName: result.extracted.companyName,
+          companyWebsite: "", // empty → org is flagged source:'demo'
+          slug,
+          domain: result.identity?.domain || slug,
+          timezone: form.timezone,
+          isDemo: true,
+        },
+        extracted: result.extracted,
+        pagesCount: (result.sourcesUsed || []).reduce((s, x) => s + (x.pagesCount || 0), 0),
+        demoMeta: {
+          sourcesUsed: result.sourcesUsed || [],
+          failures: result.failures || [],
+          serviceCount: result.serviceCount,
+        },
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+      setStatus("");
+    }
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    setError("");
+    if (mode === "real") submitReal();
+    else submitDemo();
+  };
+
   return (
     <div className="sg-step">
-      <h2>Step 1 — Company Info</h2>
+      <h2>Step 1 — Source</h2>
       <p className="sg-step-desc">
-        Enter the company details. We'll crawl the website to extract services, branches, and industry data automatically.
+        Build from one real company, or generate a fake demo org from one or more company sites in an industry.
       </p>
+
+      <div className="sg-mode-toggle">
+        <button type="button" className={mode === "real" ? "sg-mode-btn sg-mode-btn-active" : "sg-mode-btn"} onClick={() => { setMode("real"); setError(""); }}>🏢 Real client</button>
+        <button type="button" className={mode === "demo" ? "sg-mode-btn sg-mode-btn-active" : "sg-mode-btn"} onClick={() => { setMode("demo"); setError(""); }}>🎭 Industry / Company demo</button>
+      </div>
+
       <form onSubmit={handleSubmit} className="sg-form">
-        <label>
-          Company Name
-          <input
-            type="text"
-            placeholder="Attic Pros LLC"
-            value={form.companyName}
-            onChange={(e) => setForm({ ...form, companyName: e.target.value })}
-            disabled={loading}
-          />
-        </label>
-        <label>
-          Website URL
-          <input
-            type="url"
-            placeholder="https://atticpros.com"
-            value={form.companyWebsite}
-            onChange={(e) => setForm({ ...form, companyWebsite: e.target.value })}
-            disabled={loading}
-          />
-        </label>
+        {mode === "real" && (
+          <>
+            <label>
+              Company Name
+              <input
+                type="text"
+                placeholder="Attic Pros LLC"
+                value={form.companyName}
+                onChange={(e) => setForm({ ...form, companyName: e.target.value })}
+                disabled={loading}
+              />
+            </label>
+            <label>
+              Website URL
+              <input
+                type="url"
+                placeholder="https://atticpros.com"
+                value={form.companyWebsite}
+                onChange={(e) => setForm({ ...form, companyWebsite: e.target.value })}
+                disabled={loading}
+              />
+            </label>
+          </>
+        )}
+
+        {mode === "demo" && (
+          <div className="sg-section">
+            <h3>Company sites</h3>
+            <p className="sg-hint">Add one site (company demo) or several from the same industry (industry demo). The AI merges their services and invents a fake company name + logo.</p>
+            {demoUrls.map((url, i) => (
+              <div key={i} className="sg-branch">
+                <div className="sg-branch-header">
+                  <span>Site {i + 1}</span>
+                  {demoUrls.length > 1 && (
+                    <button type="button" className="sg-btn-danger-sm" onClick={() => removeUrl(i)} disabled={loading}>Remove</button>
+                  )}
+                </div>
+                <input
+                  type="url"
+                  placeholder="https://competitor.com"
+                  value={url}
+                  onChange={(e) => updateUrl(i, e.target.value)}
+                  disabled={loading}
+                />
+              </div>
+            ))}
+            <button type="button" className="sg-btn-secondary" onClick={addUrl} disabled={loading}>+ Add Site</button>
+
+            <label className="sg-branch-count">
+              Fake branches to create
+              <input
+                type="number"
+                min="1"
+                max="10"
+                value={demoBranchCount}
+                onChange={(e) => setDemoBranchCount(Math.max(1, Math.min(10, parseInt(e.target.value) || 1)))}
+                disabled={loading}
+              />
+              <span className="sg-label-optional">AI invents fake names, addresses, phone & license</span>
+            </label>
+          </div>
+        )}
+
         <label>
           Timezone
           <select
@@ -116,10 +217,11 @@ function StepCompanyInfo({ onNext }) {
             ))}
           </select>
         </label>
+
         {error && <p className="sg-error">{error}</p>}
         {status && <p className="sg-status">{status}</p>}
         <button type="submit" disabled={loading} className="sg-btn-primary">
-          {loading ? "Crawling…" : "Crawl Website →"}
+          {loading ? "Crawling…" : mode === "real" ? "Crawl Website →" : "Build Demo Source →"}
         </button>
       </form>
     </div>
@@ -128,11 +230,12 @@ function StepCompanyInfo({ onNext }) {
 
 // ── Step 2: Review Extracted Data ────────────────────────────────────────────
 function StepReviewExtracted({ data, onNext, onBack }) {
-  const { companyInfo, extracted, pagesCount } = data;
+  const { companyInfo, extracted, pagesCount, demoMeta } = data;
+  const isDemo = companyInfo.isDemo;
   const [branches, setBranches] = useState(
     extracted.branches.length > 0
       ? extracted.branches
-      : [{ name: "Main Office", address: "" }]
+      : [{ name: "Main Office", address: isDemo ? "123 Demo Street, Demo City, CA 90001" : "" }]
   );
   const [about, setAbout] = useState(extracted.about);
   const [phone, setPhone] = useState(extracted.phone);
@@ -160,8 +263,18 @@ function StepReviewExtracted({ data, onNext, onBack }) {
     <div className="sg-step">
       <h2>Step 2 — Review Extracted Data</h2>
       <p className="sg-step-desc">
-        Crawled <strong>{pagesCount} pages</strong>. Review and edit the extracted information.
+        Crawled <strong>{pagesCount} pages</strong>
+        {isDemo && demoMeta ? <> from <strong>{demoMeta.sourcesUsed.length} site{demoMeta.sourcesUsed.length !== 1 ? "s" : ""}</strong></> : null}. Review and edit the extracted information.
       </p>
+
+      {isDemo && (
+        <div className="sg-demo-banner">
+          🎭 <strong>Demo org</strong> — fake company “{companyInfo.companyName}” generated from the sites below. No real contact info; you'll generate a fake logo next.
+          {demoMeta?.failures?.length > 0 && (
+            <div className="sg-demo-failures">⚠ {demoMeta.failures.length} site(s) failed to crawl and were skipped.</div>
+          )}
+        </div>
+      )}
 
       <div className="sg-section">
         <h3>Company Info</h3>
@@ -503,6 +616,10 @@ export default function OrgGeneratorPage() {
 
     try {
       const generated = await generateSeed(input, extracted, pricebook);
+      // Demo orgs start with a clean "Your Logo" placeholder.
+      if (companyInfo.isDemo) {
+        try { await setLogoPlaceholder(generated.slug); } catch { /* non-blocking */ }
+      }
       setResult(generated);
       setStep("result");
     } catch (err) {

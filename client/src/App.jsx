@@ -5,6 +5,7 @@ import OrgGeneratorPage from "./pages/OrgGeneratorPage.jsx";
 import OrgDetailPage from "./pages/OrgDetailPage.jsx";
 import OrgSettingsPage from "./pages/OrgSettingsPage.jsx";
 import ItemsManagerPage from "./pages/ItemsManagerPage.jsx";
+import { ITEM_GENERATOR_ENABLED } from "./featureFlags.js";
 
 export default function App() {
   return (
@@ -17,8 +18,12 @@ export default function App() {
           <Route path="/orgs/:slug" element={<OrgDetailPage />} />
           <Route path="/orgs/:slug/settings" element={<OrgSettingsPage />} />
           <Route path="/orgs/:slug/settings/:section" element={<OrgSettingsPage />} />
-          <Route path="/items" element={<ItemsManagerPage />} />
-          <Route path="/items/:itemId" element={<ItemsManagerPage />} />
+          {ITEM_GENERATOR_ENABLED && (
+            <>
+              <Route path="/items" element={<ItemsManagerPage />} />
+              <Route path="/items/:itemId" element={<ItemsManagerPage />} />
+            </>
+          )}
         </Routes>
       </div>
     </BrowserRouter>

@@ -4,6 +4,7 @@ import OpenAI from 'openai';
 import env from '../config/env.js';
 import { crawlWebsite } from '../services/seedGenerator/crawl.js';
 import { extractWebsiteData } from '../services/seedGenerator/extract.js';
+import { buildDemoSource } from '../services/seedGenerator/mergeDemo.js';
 import { generatePricebook } from '../services/seedGenerator/research.js';
 import { serializeOrganization } from '../services/seedGenerator/serialize.js';
 import { generateSourceLedger } from '../services/seedGenerator/ledger.js';
@@ -50,6 +51,51 @@ router.post('/crawl', async (req, res, next) => {
         extracted,
         pagesCount: crawlResult.pages.length,
         slug: slugify(extracted.companyName),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/seed/demo/crawl — crawl N company sites of an industry (or one
+// company), merge them into a synthetic catalog source, and invent a fake
+// company identity. Returns the same `extracted` shape as /crawl so the review
+// wizard + /generate path consume it unchanged (source becomes 'demo').
+router.post('/demo/crawl', async (req, res, next) => {
+  try {
+    const { urls, branchCount } = req.body;
+    if (!Array.isArray(urls) || urls.length === 0) {
+      return res.status(400).json({ success: false, error: 'urls (non-empty array) is required' });
+    }
+    const branches = Math.max(1, Math.min(10, parseInt(branchCount, 10) || 1));
+    const cleaned = [];
+    for (const raw of urls) {
+      const url = String(raw || '').trim();
+      if (!url) continue;
+      try { new URL(url); } catch {
+        return res.status(400).json({ success: false, error: `Invalid URL: ${url}` });
+      }
+      cleaned.push(url);
+    }
+    if (cleaned.length === 0) return res.status(400).json({ success: false, error: 'No valid URLs provided' });
+
+    const apiKey = env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(500).json({ success: false, error: 'OPENAI_API_KEY not configured' });
+    const openai = new OpenAI({ apiKey });
+
+    logger.info(`Demo crawl: ${cleaned.length} site(s), ${branches} branch(es)`);
+    const { extracted, identity, sourcesUsed, failures, serviceCount } = await buildDemoSource(cleaned, openai, { branchCount: branches });
+
+    res.json({
+      success: true,
+      data: {
+        extracted,
+        identity,
+        slug: slugify(extracted.companyName),
+        sourcesUsed,
+        failures,
+        serviceCount,
       },
     });
   } catch (err) {

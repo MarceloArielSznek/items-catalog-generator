@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig(({ mode }) => {
   const envDir = path.resolve(__dirname, "../server");
   const env = loadEnv(mode, envDir, "");
-  const port = env.PORT || "3001";
+  const port = env.PORT || "3005";
   const target = `http://localhost:${port}`;
 
   return {

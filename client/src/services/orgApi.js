@@ -51,11 +51,11 @@ export function getImageProviders() {
     .then((j) => { if (!j.success) throw new Error(j.error); return j.data; });
 }
 
-export function generateItemImage(slug, categoryName, itemName, notes, { provider, model, quality } = {}) {
+export function generateItemImage(slug, categoryName, itemName, notes, { provider, model, quality, comment = '' } = {}) {
   return fetch(`/api/orgs/${slug}/resources/item-image/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ categoryName, itemName, notes, provider, model, quality }),
+    body: JSON.stringify({ categoryName, itemName, notes, provider, model, quality, comment }),
   }).then((r) => r.json()).then((j) => { if (!j.success) throw new Error(j.error); return j; });
 }
 
@@ -109,18 +109,38 @@ export function deleteOrgLogo(slug, variant) {
     .then((j) => { if (!j.success) throw new Error(j.error); return j; });
 }
 
+export function setLogoPlaceholder(slug, label) {
+  return fetch(`/api/orgs/${slug}/logo-placeholder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  }).then((r) => r.json()).then((j) => { if (!j.success) throw new Error(j.error); return j.data; });
+}
+
+export function generateOrgLogo(slug, { provider, model } = {}) {
+  return fetch(`/api/orgs/${slug}/generate-logo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, model }),
+  }).then((r) => r.json()).then((j) => { if (!j.success) throw new Error(j.error); return j.data; });
+}
+
+export function cloneToReal(slug, realData) {
+  return req('POST', `/${slug}/clone-to-real`, realData);
+}
+
 export function bulkApplyOrgLogo(slug) {
   return fetch(`/api/orgs/${slug}/bulk-logo-apply`, { method: 'POST' })
     .then((r) => r.json())
     .then((j) => { if (!j.success) throw new Error(j.error); return j.data; });
 }
 
-export function bulkGenerateImages(slug, categoryName, { mode = 'generate', provider, model, quality, overwrite = false, onProgress = () => {}, onDone = () => {} } = {}) {
+export function bulkGenerateImages(slug, categoryName, { mode = 'generate', provider, model, quality, overwrite = false, comment = '', onProgress = () => {}, onDone = () => {} } = {}) {
   return new Promise((resolve, reject) => {
     fetch(`/api/orgs/${slug}/resources/bulk-generate-images`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ categoryName, mode, provider, model, quality, overwrite }),
+      body: JSON.stringify({ categoryName, mode, provider, model, quality, overwrite, comment }),
     }).then(async (res) => {
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));

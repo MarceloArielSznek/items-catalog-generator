@@ -366,7 +366,10 @@ export async function deployOrg(org, options, onStep) {
     );
     const itemIds = await upsertNamed(options.apiUrl, auth, 'items', itemsWithCategory, existing.items, (item) => ({
       name: item.name,
-      itemInfo: item.itemInfo || item.notes || '',
+      // Menaia exposes a single item description field (`itemInfo`). We publish
+      // the customer-facing `notes` there; the short technical `itemInfo` line
+      // stays local as internal metadata and a fallback when notes is empty.
+      itemInfo: item.notes || item.itemInfo || '',
       unit: item.unit,
       materialCost: item.materialCost,
       laborHours: item.laborHours,

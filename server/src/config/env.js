@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 const SERVER_ROOT = path.resolve(__dirname, "../..");
 
 const env = {
-  PORT: parseInt(process.env.PORT, 10) || 3001,
+  PORT: parseInt(process.env.PORT, 10) || 3005,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || "",
   MAX_FILE_SIZE_MB: parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 10,
   MAX_MEDIA_SIZE_MB: parseInt(process.env.MAX_MEDIA_SIZE_MB, 10) || 200,
@@ -17,6 +17,13 @@ const env = {
   GENERATED_DIR: path.resolve(SERVER_ROOT, process.env.GENERATED_DIR || "src/generated"),
   SCENES_DIR: path.resolve(SERVER_ROOT, process.env.SCENES_DIR || "src/scenes"),
   IS_PRODUCTION: process.env.NODE_ENV === "production",
+
+  // Legacy item generator (image compose / scenes / library / payload / enrich).
+  // Kept in the repo for dev, but unmounted in prod so only the org generator is
+  // exposed. On in dev by default; set ENABLE_ITEM_GENERATOR=true to force-enable.
+  ENABLE_ITEM_GENERATOR:
+    process.env.ENABLE_ITEM_GENERATOR === "true" ||
+    (process.env.ENABLE_ITEM_GENERATOR !== "false" && process.env.NODE_ENV !== "production"),
 
   // Menaia NestJS API. Base URL only — service code appends `/v1`.
   MENAIA_API_URL: (process.env.MENAIA_API_URL || process.env.API_BASE_URL || "https://app.menaia.com").replace(/\/+$/, ""),

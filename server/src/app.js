@@ -53,14 +53,20 @@ app.use("/generated", express.static(env.GENERATED_DIR));
 app.use("/scenes", express.static(env.SCENES_DIR));
 app.use("/pre-generated", express.static(path.resolve(__dirname, "pre-generated")));
 
-app.use("/api", imageRoutes);
-app.use("/api/scenes", sceneRoutes);
-app.use("/api", downloadRoutes);
-app.use("/api/library", libraryRoutes);
-app.use("/api/payload", payloadRoutes);
-app.use("/api/enrich", enrichmentRoutes);
+// ── Org generator (always mounted — this is the product that ships) ──────────
 app.use("/api/seed", seedRoutes);
 app.use("/api/orgs", orgRoutes);
+
+// ── Legacy item generator (compose / scenes / library / payload / enrich) ────
+// Unmounted in production; kept for dev. Toggle via ENABLE_ITEM_GENERATOR.
+if (env.ENABLE_ITEM_GENERATOR) {
+  app.use("/api", imageRoutes);
+  app.use("/api/scenes", sceneRoutes);
+  app.use("/api", downloadRoutes);
+  app.use("/api/library", libraryRoutes);
+  app.use("/api/payload", payloadRoutes);
+  app.use("/api/enrich", enrichmentRoutes);
+}
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });

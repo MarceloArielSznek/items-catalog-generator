@@ -1,4 +1,5 @@
 import { NavLink } from "react-router-dom";
+import { ITEM_GENERATOR_ENABLED } from "../featureFlags.js";
 
 export default function Header() {
   return (
@@ -14,9 +15,11 @@ export default function Header() {
         <NavLink to="/" end className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
           Orgs
         </NavLink>
-        <NavLink to="/items" className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
-          Price Book
-        </NavLink>
+        {ITEM_GENERATOR_ENABLED && (
+          <NavLink to="/items" className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
+            Price Book
+          </NavLink>
+        )}
       </nav>
     </header>
   );

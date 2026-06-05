@@ -9,6 +9,7 @@ import { listOrgs, getOrg, saveOrg, updateOrg, deleteOrg, updateDeploymentLog } 
 import { deployOrg, preflightOrgDeployment } from '../services/deploymentService.js';
 import { downloadImage, findBestImage, findImageCandidates } from '../services/imageSearchService.js';
 import { generateImage, getAvailableProviders } from '../services/imageProviders.js';
+import { removeBackground as imglyRemoveBackground } from '@imgly/background-removal-node';
 import env from '../config/env.js';
 import logger from '../utils/logger.js';
 
@@ -37,6 +38,88 @@ async function processOrgLogo(buffer) {
   return sharp(data, { raw: { width, height, channels } }).png().toBuffer();
 }
 
+// Remove the logo's background with the app's ML background remover (the same
+// @imgly model used for item images). This is model-agnostic — it segments the
+// emblem regardless of what background the image model painted — so we don't
+// depend on the generator honoring a background-colour instruction. Returns a
+// trimmed, size-capped transparent PNG.
+async function knockoutLogoBackground(rawBuffer) {
+  const blob = new Blob([rawBuffer], { type: 'image/png' });
+  const out = await imglyRemoveBackground(blob, { output: { format: 'image/png', quality: 1 } });
+  const transparent = Buffer.from(await out.arrayBuffer());
+  return sharp(transparent)
+    .trim()
+    .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+    .png()
+    .toBuffer();
+}
+
+// Build a clean "YOUR LOGO" placeholder — for demo orgs where a real logo isn't
+// available yet. A dark translucent rounded pill with white text + image icon,
+// which reads on both light and dark photos. Returns a transparent PNG.
+async function buildLogoPlaceholder(label = 'YOUR LOGO') {
+  const safe = String(label).toUpperCase().replace(/[<&>]/g, '').slice(0, 18) || 'YOUR LOGO';
+  const svg = `<svg width="720" height="300" xmlns="http://www.w3.org/2000/svg">
+  <rect x="6" y="6" width="708" height="288" rx="40"
+        fill="rgba(15,23,42,0.74)" stroke="rgba(255,255,255,0.6)" stroke-width="4"/>
+  <g transform="translate(74,116)" stroke="#ffffff" stroke-width="6" fill="none" stroke-linejoin="round" stroke-linecap="round">
+    <rect x="0" y="0" width="86" height="68" rx="10"/>
+    <circle cx="24" cy="24" r="10" fill="#ffffff" stroke="none"/>
+    <path d="M5 62 L32 34 L52 54 L66 42 L81 58"/>
+  </g>
+  <text x="200" y="138" font-family="Helvetica, Arial, sans-serif" font-size="64" font-weight="700" fill="#ffffff" letter-spacing="2">${safe}</text>
+  <text x="202" y="196" font-family="Helvetica, Arial, sans-serif" font-size="30" font-weight="400" fill="rgba(255,255,255,0.78)" letter-spacing="4">DEMO PLACEHOLDER</text>
+</svg>`;
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+// ── Logo compositing ─────────────────────────────────────────────────────────
+
+/**
+ * Composite the org's logo as a clean corner watermark: one full-colour variant,
+ * a fixed corner (default bottom-left), no scrim — predictable, like a normal
+ * watermark. `position` ∈ bottom-left | bottom-right | top-left | top-right.
+ */
+async function composeLogo(imageBuffer, slug, logoVariants, position = 'bottom-left') {
+  const meta = await sharp(imageBuffer).metadata();
+  const W = meta.width, H = meta.height;
+  const margin = Math.round(W * 0.04);
+
+  // Always the real, full-colour logo — no brightness-based variant switching.
+  const variant = ['color', 'default'].find((v) => logoVariants.includes(v)) || logoVariants[0];
+
+  // Trim transparent padding so the logo sits flush against the corner margin.
+  let logo;
+  try { logo = await sharp(orgLogoPath(slug, variant)).trim().png().toBuffer(); }
+  catch { logo = await sharp(orgLogoPath(slug, variant)).png().toBuffer(); }
+
+  // Size to ~22% of the image width, but never taller than ~16% of the height.
+  const probe = await sharp(logo).metadata();
+  const aspect = (probe.height || 1) / (probe.width || 1);
+  let lw = Math.round(W * 0.22);
+  let lh = Math.round(lw * aspect);
+  const maxH = Math.round(H * 0.16);
+  if (lh > maxH) { lh = maxH; lw = Math.round(lh / aspect); }
+
+  const logoResized = await sharp(logo)
+    .resize({ width: lw, height: lh, fit: 'inside', withoutEnlargement: true })
+    .png()
+    .toBuffer();
+  const rMeta = await sharp(logoResized).metadata();
+  const rw = rMeta.width, rh = rMeta.height;
+
+  const isRight = position.endsWith('right');
+  const isTop = position.startsWith('top');
+  const left = isRight ? W - rw - margin : margin;
+  const top = isTop ? margin : H - rh - margin;
+
+  const buffer = await sharp(imageBuffer)
+    .composite([{ input: logoResized, left, top }])
+    .jpeg({ quality: 92 })
+    .toBuffer();
+  return { buffer, variant, position };
+}
+
 const router = Router();
 
 // ── Image helpers ─────────────────────────────────────────────────────────────
@@ -48,6 +131,10 @@ function mediaDir(slug) {
 function imageKey(categoryName, itemName) {
   const safe = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
   return `${safe(categoryName)}__${safe(itemName)}`;
+}
+
+function slugify(name) {
+  return (name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
 function imageFilePath(slug, key) {
@@ -92,9 +179,10 @@ Keep everything under 100 words total.`,
 - End with: photorealistic, consistent character, no text, no logos, no watermarks`,
 };
 
-async function buildSmartImagePrompt(openai, itemName, categoryName, notes, org, imageStyle = {}, provider = 'openai') {
+async function buildSmartImagePrompt(openai, itemName, categoryName, notes, org, imageStyle = {}, provider = 'openai', comment = '') {
   const { home, technician, styleNotes } = imageStyle || {};
   const formatGuide = PROVIDER_PROMPT_GUIDE[provider] || PROVIDER_PROMPT_GUIDE.openai;
+  const avoid = (comment || '').replace(/\n+/g, ' ').trim().slice(0, 400);
 
   const providerLabel = {
     openai: 'gpt-image-1 (OpenAI)',
@@ -120,6 +208,8 @@ Output ONLY the prompt — no explanation, no quotes, no preamble.`;
     technician ? `Technician: ${technician}` : '',
     styleNotes ? `Style: ${styleNotes}`      : '',
     '',
+    avoid ? `MUST AVOID — recurring unrealistic elements for this trade. Do NOT include any of these in the image, and bake matching negatives into the prompt: ${avoid}` : '',
+    '',
     'Instructions:',
     formatGuide,
   ].filter(Boolean).join('\n');
@@ -140,8 +230,9 @@ Output ONLY the prompt — no explanation, no quotes, no preamble.`;
 /**
  * Static fallback prompt builder — used if GPT-4o call fails.
  */
-function buildImagePrompt(itemName, categoryName, notes, industry, imageStyle = {}) {
+function buildImagePrompt(itemName, categoryName, notes, industry, imageStyle = {}, comment = '') {
   const { home, technician, styleNotes } = imageStyle || {};
+  const avoid = (comment || '').replace(/\n+/g, ' ').trim().slice(0, 400);
   const combined = `${itemName} ${categoryName} ${notes || ''}`.toLowerCase();
 
   // ── Scene classifiers — ordered most-specific first ────────────────────────
@@ -231,7 +322,8 @@ function buildImagePrompt(itemName, categoryName, notes, industry, imageStyle = 
     'Show the technician using the correct, realistic tools for this specific service.',
     'Real residential job site — not a staged studio look.',
     'No text, no logos, no watermarks.',
-  ].join(' ');
+    avoid ? `Avoid these unrealistic elements: ${avoid}.` : '',
+  ].filter(Boolean).join(' ');
 
   // Notes go FIRST so they anchor the AI's understanding, then scene, then property/worker/style
   return [serviceCtx, scene, property, worker, quality].filter(Boolean).join('\n');
@@ -320,6 +412,61 @@ router.delete('/:slug', (req, res) => {
     if (!deleted) return res.status(404).json({ success: false, error: 'Org not found' });
     res.json({ success: true });
   } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/orgs/:slug/clone-to-real — spin a real client org off a demo template.
+// Reuses the demo's catalog + curated item images; swaps in real identity. The
+// real logo is NOT copied (the client gets its own).
+router.post('/:slug/clone-to-real', (req, res) => {
+  try {
+    const demo = getOrg(req.params.slug);
+    if (!demo) return res.status(404).json({ success: false, error: 'Org not found' });
+
+    const { companyName, companyWebsite, domain, timezone, region } = req.body || {};
+    if (!companyName?.trim()) return res.status(400).json({ success: false, error: 'companyName is required' });
+
+    // Unique slug derived from the real company name
+    const base = slugify(companyName) || 'org';
+    let slug = base;
+    let n = 2;
+    while (getOrg(slug)) slug = `${base}-${n++}`;
+
+    // Deep-copy the demo catalog, swap identity, mark as a real client draft
+    const clone = JSON.parse(JSON.stringify(demo));
+    clone.slug = slug;
+    clone.name = companyName.trim();
+    clone.source = 'real_client';
+    clone.status = 'draft';
+    clone.websiteUrl = (companyWebsite || '').trim();
+    clone.domain = (domain || slug).trim();
+    if (timezone) clone.timezone = timezone;
+    if (region) clone.region = region;
+    clone.createdAt = new Date().toISOString();
+    clone.clonedFrom = demo.slug;
+    delete clone.deployment; // fresh org — don't inherit the demo's deploy log/ids
+
+    // Re-point item image URLs to the new org's media path
+    const fromPrefix = `/api/orgs/${demo.slug}/media/`;
+    const toPrefix = `/api/orgs/${slug}/media/`;
+    for (const cat of clone.resources?.categories || []) {
+      for (const item of cat.items || []) {
+        if (typeof item.imageUrl === 'string' && item.imageUrl.startsWith(fromPrefix)) {
+          item.imageUrl = item.imageUrl.replace(fromPrefix, toPrefix);
+        }
+      }
+    }
+
+    // Copy the curated item images (the reuse the user asked for)
+    const srcMedia = mediaDir(demo.slug);
+    if (fs.existsSync(srcMedia)) fs.cpSync(srcMedia, mediaDir(slug), { recursive: true });
+
+    saveOrg(clone);
+    logger.info(`Cloned demo ${demo.slug} → real client ${slug}`);
+    res.json({ success: true, data: { slug, org: clone } });
+  } catch (err) {
+    logger.error(`Clone-to-real failed: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -473,6 +620,7 @@ router.post('/:slug/resources/item-image/generate', async (req, res) => {
       provider = 'openai',
       model = 'gpt-image-1',
       quality = 'medium',
+      comment = '',
     } = req.body;
     if (!categoryName || !itemName) return res.status(400).json({ success: false, error: 'categoryName and itemName required' });
 
@@ -483,11 +631,11 @@ router.post('/:slug/resources/item-image/generate', async (req, res) => {
     let prompt;
     try {
       if (!openai) throw new Error('No OpenAI key for prompt generation');
-      prompt = await buildSmartImagePrompt(openai, itemName, categoryName, notes, org, org.imageStyle, provider);
+      prompt = await buildSmartImagePrompt(openai, itemName, categoryName, notes, org, org.imageStyle, provider, comment);
       logger.info(`Smart prompt [${provider}]: ${prompt.slice(0, 120)}…`);
     } catch (promptErr) {
       logger.warn(`GPT-4o prompt failed, using static builder: ${promptErr.message}`);
-      prompt = buildImagePrompt(itemName, categoryName, notes, org.industry, org.imageStyle);
+      prompt = buildImagePrompt(itemName, categoryName, notes, org.industry, org.imageStyle, comment);
     }
 
     const buf = await generateImage(prompt, { provider, model, quality });
@@ -628,7 +776,7 @@ router.post('/:slug/resources/bulk-generate-images', async (req, res) => {
   const org = getOrg(req.params.slug);
   if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
 
-  const { categoryName, mode = 'generate', provider = 'openai', model = 'gpt-image-1', quality = 'low', overwrite = false } = req.body;
+  const { categoryName, mode = 'generate', provider = 'openai', model = 'gpt-image-1', quality = 'low', overwrite = false, comment = '' } = req.body;
   const cat = org.resources.categories.find((c) => c.name === categoryName);
   if (!cat) return res.status(404).json({ success: false, error: 'Category not found' });
 
@@ -666,10 +814,10 @@ router.post('/:slug/resources/bulk-generate-images', async (req, res) => {
         let prompt;
         try {
           if (!promptOpenAI) throw new Error('No OpenAI key');
-          prompt = await buildSmartImagePrompt(promptOpenAI, item.name, categoryName, item.notes || item.itemInfo, org, org.imageStyle, provider);
+          prompt = await buildSmartImagePrompt(promptOpenAI, item.name, categoryName, item.notes || item.itemInfo, org, org.imageStyle, provider, comment);
         } catch (promptErr) {
           logger.warn(`Smart prompt failed for "${item.name}", using fallback: ${promptErr.message}`);
-          prompt = buildImagePrompt(item.name, categoryName, item.notes || item.itemInfo, org.industry, org.imageStyle);
+          prompt = buildImagePrompt(item.name, categoryName, item.notes || item.itemInfo, org.industry, org.imageStyle, comment);
         }
         inputBuffer = await generateImage(prompt, { provider, model, quality });
         imageSource = `${provider}:${model}`;
@@ -772,6 +920,60 @@ router.post('/:slug/logo/:variant', mediaUpload.single('logo'), async (req, res)
   }
 });
 
+// POST /api/orgs/:slug/logo-placeholder — set a clean "YOUR LOGO" placeholder
+// (instant, no AI). The default logo for demo orgs. (Path avoids colliding with
+// the /:slug/logo/:variant route.)
+router.post('/:slug/logo-placeholder', async (req, res) => {
+  try {
+    const org = getOrg(req.params.slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+    const png = await buildLogoPlaceholder(req.body?.label || 'YOUR LOGO');
+    fs.mkdirSync(orgLogoDir(org.slug), { recursive: true });
+    fs.writeFileSync(orgLogoPath(org.slug, 'color'), png);
+    fs.writeFileSync(orgLogoPath(org.slug, 'default'), png);
+    logger.info(`Logo placeholder set: ${org.slug}`);
+    res.json({ success: true, data: { variants: ['color', 'default'], placeholder: true } });
+  } catch (err) {
+    logger.error(`Logo placeholder failed: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/orgs/:slug/generate-logo — AI-generate a fake logo for a demo org.
+// (Path avoids colliding with the /:slug/logo/:variant route above.)
+router.post('/:slug/generate-logo', async (req, res) => {
+  try {
+    const org = getOrg(req.params.slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+
+    // Default to Nano Banana Pro (Gemini) — strong at clean, transparent logos.
+    const { provider = 'gemini', model = 'gemini-3-pro-image' } = req.body || {};
+    const industry = org.industry || 'home services';
+    const prompt = [
+      `A clean, modern, professional logo emblem for a fictional ${industry} contractor company named "${org.name}".`,
+      'Flat vector style, simple iconic mark, bold solid shapes, 2-3 brand colors, strong silhouette, square 1:1 composition.',
+      'Centered on a plain, solid, pure white studio background.',
+      'NO text, NO letters, NO words — icon/emblem only. No photorealism, no 3D, no drop shadows, no watermark.',
+    ].join(' ');
+
+    logger.info(`Generating AI logo: ${org.slug} [${provider} ${model}]`);
+    const raw = await generateImage(prompt, { provider, model, quality: '2k' });
+
+    // ML background removal → one clean, full-colour transparent logo.
+    const color = await knockoutLogoBackground(raw);
+
+    fs.mkdirSync(orgLogoDir(org.slug), { recursive: true });
+    fs.writeFileSync(orgLogoPath(org.slug, 'color'), color);
+    fs.writeFileSync(orgLogoPath(org.slug, 'default'), color);
+
+    logger.info(`AI logo saved (color): ${org.slug}`);
+    res.json({ success: true, data: { variants: ['color', 'default'], model: `${provider}:${model}` } });
+  } catch (err) {
+    logger.error(`AI logo generation failed: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // DELETE /api/orgs/:slug/logo/:variant — delete logo variant
 router.delete('/:slug/logo/:variant', (req, res) => {
   try {
@@ -789,6 +991,9 @@ router.post('/:slug/bulk-logo-apply', async (req, res) => {
     const { slug } = req.params;
     const org = getOrg(slug);
     if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+
+    const validPositions = ['bottom-left', 'bottom-right', 'top-left', 'top-right'];
+    const position = validPositions.includes(req.body?.position) ? req.body.position : 'bottom-left';
 
     const logoDir = orgLogoDir(slug);
     let logoVariants = [];
@@ -815,37 +1020,7 @@ router.post('/:slug/bulk-logo-apply', async (req, res) => {
 
         try {
           const imageBuffer = fs.readFileSync(imgPath);
-          const { width, height } = await sharp(imageBuffer).metadata();
-          const margin = Math.round(width * 0.04);
-          const sampleSize = Math.min(120, Math.round(width * 0.25));
-          const zone = { left: Math.max(0, width - sampleSize - margin), top: Math.max(0, height - sampleSize - margin) };
-
-          const { data: sd } = await sharp(imageBuffer)
-            .extract({ ...zone, width: sampleSize, height: sampleSize })
-            .resize(8, 8).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-          let rr = 0, gg = 0, bb = 0;
-          for (let i = 0; i < sd.length; i += 3) { rr += sd[i]; gg += sd[i + 1]; bb += sd[i + 2]; }
-          const bright = (rr + gg + bb) / (3 * (sd.length / 3));
-
-          let preferred;
-          if (bright < 90)        preferred = ['white', 'color', 'default', 'dark'];
-          else if (bright < 160)  preferred = ['color', 'white', 'default', 'dark'];
-          else                    preferred = ['dark', 'color', 'default', 'white'];
-          const bestVariant = preferred.find(v => logoVariants.includes(v)) || logoVariants[0];
-
-          const logoBuffer = fs.readFileSync(orgLogoPath(slug, bestVariant));
-          const maxLogoW = Math.round(width * 0.25);
-          const resizedLogo = await sharp(logoBuffer).resize({ width: maxLogoW, withoutEnlargement: true }).png().toBuffer();
-          const { width: logoW, height: logoH } = await sharp(resizedLogo).metadata();
-          const pos = { left: width - logoW - margin, top: height - logoH - margin };
-
-          let finalLogo = resizedLogo;
-          if (bright > 140) finalLogo = await sharp(resizedLogo).negate({ alpha: false }).toBuffer();
-
-          const finalBuffer = await sharp(imageBuffer)
-            .composite([{ input: finalLogo, top: pos.top, left: pos.left }])
-            .jpeg({ quality: 90 })
-            .toBuffer();
+          const { buffer: finalBuffer } = await composeLogo(imageBuffer, slug, logoVariants, position);
 
           // Save as {key}__logo.jpg — original stays untouched
           const logoKey = `${key}__logo`;

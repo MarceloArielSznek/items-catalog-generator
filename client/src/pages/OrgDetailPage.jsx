@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getOrg, deleteOrg, deployOrg, planOrgDeployment } from "../services/orgApi.js";
+import { getOrg, deleteOrg, deployOrg, planOrgDeployment, generateOrgLogo, setLogoPlaceholder, cloneToReal } from "../services/orgApi.js";
 
 function StatBadge({ label, value }) {
   return (
@@ -134,63 +134,220 @@ function UsersSection({ users }) {
 
 function ImagesSection({ org }) {
   const [expandedCat, setExpandedCat] = useState(null);
+  const [preview, setPreview] = useState(null);
 
   const totalItems = org.resources.categories.reduce((s, c) => s + c.items.length, 0);
   const itemsWithImages = org.resources.categories.reduce(
     (s, c) => s + c.items.filter((i) => i.imageUrl).length,
     0
   );
+  const itemsWithLogo = org.resources.categories.reduce(
+    (s, c) => s + c.items.filter((i) => i.imageUrlWithLogo).length,
+    0
+  );
   const coverage = totalItems > 0 ? Math.round((itemsWithImages / totalItems) * 100) : 0;
 
+  // Group categories by work area — each category assigned to first work area that claims it.
+  const workAreas = org.resources.workAreas || [];
+  const assigned = new Set();
+  const groups = workAreas.map((wa) => {
+    const cats = (wa.categories || [])
+      .map((name) => org.resources.categories.find((c) => c.name === name))
+      .filter(Boolean)
+      .filter((c) => !assigned.has(c.name));
+    cats.forEach((c) => assigned.add(c.name));
+    return { name: wa.name, cats };
+  }).filter((g) => g.cats.length > 0);
+
+  // Unassigned categories go in a final group with no label
+  const unassigned = org.resources.categories.filter((c) => !assigned.has(c.name));
+  if (unassigned.length > 0) groups.push({ name: null, cats: unassigned });
+
+  function CatCard({ cat }) {
+    const withImages = cat.items.filter((i) => i.imageUrl).length;
+    const catCoverage = cat.items.length > 0 ? (withImages / cat.items.length) * 100 : 0;
+    const isFull = withImages === cat.items.length;
+    const isEmpty = withImages === 0;
+    const isOpen = expandedCat === cat.name;
+    return (
+      <div className={`img-cat-card ${isEmpty ? "img-cat-card--empty" : ""} ${isOpen ? "img-cat-card--open" : ""}`}>
+        <button
+          className="img-cat-card__toggle img-cat-card__header"
+          onClick={() => setExpandedCat(isOpen ? null : cat.name)}
+        >
+          <span className="img-cat-card__chevron">{isOpen ? "▾" : "▸"}</span>
+          <span className="img-cat-card__name">{cat.name}</span>
+          <span className="img-cat-card__meta">
+            <span className="img-cat-card__minibar" aria-hidden="true">
+              <span
+                className={`img-cat-card__minibar-fill ${isFull ? "img-cat-card__minibar-fill--full" : ""}`}
+                style={{ width: `${catCoverage}%` }}
+              />
+            </span>
+            <span className={`img-cat-card__count ${isFull ? "img-cat-card__count--full" : isEmpty ? "img-cat-card__count--zero" : ""}`}>
+              {withImages}/{cat.items.length}
+            </span>
+          </span>
+        </button>
+        {isOpen && (
+          <div className="img-cat-card__grid">
+            {cat.items.map((item) =>
+              item.imageUrl ? (
+                <button
+                  key={item.name}
+                  type="button"
+                  className="img-thumb img-thumb--has"
+                  title={`${item.name} — click to preview`}
+                  onClick={() => setPreview(item)}
+                >
+                  <img
+                    src={item.imageUrlWithLogo || item.imageUrl}
+                    alt={item.name}
+                    className="img-thumb__img"
+                    loading="lazy"
+                    onError={(e) => {
+                      // Fall back to the base image if the logo version fails to load.
+                      if (item.imageUrlWithLogo && e.currentTarget.src !== item.imageUrl) {
+                        e.currentTarget.src = item.imageUrl;
+                      }
+                    }}
+                  />
+                  {item.imageUrlWithLogo && (
+                    <span className="img-thumb__logo-badge" title="Logo applied">◆ Logo</span>
+                  )}
+                  <div className="img-thumb__label">{item.name}</div>
+                </button>
+              ) : (
+                <div key={item.name} className="img-thumb img-thumb--empty" title={item.name}>
+                  <span className="img-thumb__empty-name">{item.name}</span>
+                </div>
+              )
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <SectionCard title={`Item Images — ${itemsWithImages} / ${totalItems} (${coverage}%)`}>
+    <SectionCard title="Item Images">
       <div className="img-section">
+
+        {/* Summary + progress bar */}
+        <div className="img-summary">
+          <span className="img-summary__text">
+            <strong>{itemsWithImages}</strong> of <strong>{totalItems}</strong> items have images
+            {itemsWithLogo > 0 && (
+              <span className="img-summary__logo">
+                <span className="img-summary__logo-dot">◆</span>
+                {itemsWithLogo} with logo
+              </span>
+            )}
+          </span>
+          <span className={`img-cat-card__count ${coverage === 100 ? "img-cat-card__count--full" : ""}`}>
+            {coverage}%
+          </span>
+        </div>
         <div className="img-progress-bar">
           <div className="img-progress-bar__fill" style={{ width: `${coverage}%` }} />
         </div>
 
-        <div className="img-categories">
-          {org.resources.categories.map((cat) => {
-            const withImages = cat.items.filter((i) => i.imageUrl).length;
-            const isOpen = expandedCat === cat.name;
-            return (
-              <div key={cat.name} className="img-cat-card">
-                <button
-                  className="img-cat-card__toggle img-cat-card__header"
-                  onClick={() => setExpandedCat(isOpen ? null : cat.name)}
-                >
-                  <span className="img-cat-card__chevron">{isOpen ? "▾" : "▸"}</span>
-                  <span className="img-cat-card__name">{cat.name}</span>
-                  <span className={`img-cat-card__count ${withImages === cat.items.length ? "img-cat-card__count--full" : ""}`}>
-                    {withImages}/{cat.items.length}
-                  </span>
-                </button>
-
-                {isOpen && (
-                  <div className="img-cat-card__grid">
-                    {cat.items.map((item) => (
-                      <div
-                        key={item.name}
-                        className={`img-thumb ${item.imageUrl ? "img-thumb--has" : "img-thumb--empty"}`}
-                      >
-                        {item.imageUrl && (
-                          <img src={item.imageUrl} alt={item.name} className="img-thumb__img" />
-                        )}
-                        <div className="img-thumb__label">{item.name}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+        {/* Groups by work area */}
+        <div className="img-groups">
+          {groups.map((group) => (
+            <div key={group.name ?? "__ungrouped"} className="img-group">
+              {group.name && (
+                <div className="img-group__label">{group.name}</div>
+              )}
+              <div className="img-categories">
+                {group.cats.map((cat) => <CatCard key={cat.name} cat={cat} />)}
               </div>
-            );
-          })}
+            </div>
+          ))}
         </div>
 
-        <p className="img-section__hint" style={{ marginTop: 8 }}>
+        <p className="img-section__hint">
           Generate images from <strong>Settings → Price Book</strong>.
         </p>
       </div>
+
+      {preview && (
+        <ImagePreviewModal item={preview} onClose={() => setPreview(null)} />
+      )}
     </SectionCard>
+  );
+}
+
+function ImagePreviewModal({ item, onClose }) {
+  const hasLogo = Boolean(item.imageUrlWithLogo);
+  // Default to the logo version when it exists — that's the deployment-ready image.
+  const [variant, setVariant] = useState(hasLogo ? "logo" : "original");
+
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const src = variant === "logo" && hasLogo ? item.imageUrlWithLogo : item.imageUrl;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="img-preview" onClick={(e) => e.stopPropagation()}>
+        <div className="img-preview__header">
+          <h3 className="img-preview__title">{item.name}</h3>
+          <button className="modal-box__close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+
+        {hasLogo && (
+          <div className="img-preview__toggle">
+            <button
+              className={`img-preview__toggle-btn ${variant === "original" ? "is-active" : ""}`}
+              onClick={() => setVariant("original")}
+            >
+              Original
+            </button>
+            <button
+              className={`img-preview__toggle-btn ${variant === "logo" ? "is-active" : ""}`}
+              onClick={() => setVariant("logo")}
+            >
+              ◆ With Logo
+            </button>
+          </div>
+        )}
+
+        <div className="img-preview__stage">
+          {/* Both variants stay mounted so toggling is instant (cached) and crossfades. */}
+          <img
+            src={item.imageUrl}
+            alt={item.name}
+            className={`img-preview__img ${variant === "original" || !hasLogo ? "is-shown" : ""}`}
+          />
+          {hasLogo && (
+            <img
+              src={item.imageUrlWithLogo}
+              alt={`${item.name} with logo`}
+              className={`img-preview__img ${variant === "logo" ? "is-shown" : ""}`}
+            />
+          )}
+        </div>
+
+        <div className="img-preview__footer">
+          {hasLogo ? (
+            <span className="img-preview__hint">
+              Showing the {variant === "logo" ? "logo-branded" : "original"} image.
+            </span>
+          ) : (
+            <span className="img-preview__hint">No logo version yet — apply a logo from Settings.</span>
+          )}
+          <a className="img-preview__open" href={src} target="_blank" rel="noreferrer">
+            Open full size ↗
+          </a>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -353,6 +510,115 @@ function DeploySection({ slug, status, onDeployed }) {
   );
 }
 
+function DemoActions({ org, onChanged }) {
+  const navigate = useNavigate();
+  const [logoBusy, setLogoBusy] = useState(false);
+  const [logoMsg, setLogoMsg] = useState("");
+  const [logoVer, setLogoVer] = useState(Date.now());
+  const [showConvert, setShowConvert] = useState(false);
+  const [form, setForm] = useState({ companyName: "", companyWebsite: "" });
+  const [converting, setConverting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSetPlaceholder() {
+    setLogoBusy(true); setLogoMsg(""); setError("");
+    try {
+      await setLogoPlaceholder(org.slug);
+      setLogoVer(Date.now());
+      setLogoMsg("✓ 'Your Logo' placeholder set.");
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
+  async function handleGenerateLogo() {
+    setLogoBusy(true); setLogoMsg(""); setError("");
+    try {
+      await generateOrgLogo(org.slug);
+      setLogoVer(Date.now());
+      setLogoMsg("✓ Fake AI logo generated.");
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
+  async function handleConvert(e) {
+    e.preventDefault();
+    setError("");
+    if (!form.companyName.trim()) return setError("Real company name is required");
+    if (form.companyWebsite.trim()) {
+      try { new URL(form.companyWebsite); } catch { return setError("Enter a valid website URL"); }
+    }
+    setConverting(true);
+    try {
+      const { slug } = await cloneToReal(org.slug, {
+        companyName: form.companyName.trim(),
+        companyWebsite: form.companyWebsite.trim(),
+      });
+      navigate(`/orgs/${slug}`);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setConverting(false);
+    }
+  }
+
+  return (
+    <SectionCard title="🎭 Demo tools">
+      <div className="demo-tools">
+        <div className="demo-tools__row">
+          <div className="demo-tools__logo">
+            <img
+              src={`/api/orgs/${org.slug}/logo/color?v=${logoVer}`}
+              alt="logo"
+              onError={(e) => { e.currentTarget.style.visibility = "hidden"; }}
+            />
+          </div>
+          <div className="demo-tools__col">
+            <p className="demo-tools__desc">Demo logo — use a clean “Your Logo” placeholder, or generate a fake AI logo{org.industry ? ` (${org.industry})` : ""}.</p>
+            <div className="demo-tools__actions">
+              <button className="btn btn--primary" onClick={handleSetPlaceholder} disabled={logoBusy}>
+                {logoBusy ? "Working…" : "Use “Your Logo” placeholder"}
+              </button>
+              <button className="btn btn--secondary" onClick={handleGenerateLogo} disabled={logoBusy}>
+                ✨ AI logo
+              </button>
+            </div>
+            {logoMsg && <span className="demo-tools__ok">{logoMsg}</span>}
+          </div>
+        </div>
+
+        <div className="demo-tools__divider" />
+
+        {!showConvert ? (
+          <button className="btn btn--primary" onClick={() => setShowConvert(true)}>Convert to Real Client →</button>
+        ) : (
+          <form className="demo-tools__convert" onSubmit={handleConvert}>
+            <p className="demo-tools__desc">Clones this catalog + item images into a new real-client org. Swap in the real identity; add the real logo separately.</p>
+            <label className="form-label">Real company name
+              <input className="form-input" value={form.companyName} onChange={(e) => setForm({ ...form, companyName: e.target.value })} placeholder="Acme Insulation LLC" disabled={converting} />
+            </label>
+            <label className="form-label">Website (optional)
+              <input className="form-input" value={form.companyWebsite} onChange={(e) => setForm({ ...form, companyWebsite: e.target.value })} placeholder="https://acme.com" disabled={converting} />
+            </label>
+            <div className="demo-tools__actions">
+              <button type="button" className="btn btn--secondary" onClick={() => setShowConvert(false)} disabled={converting}>Cancel</button>
+              <button type="submit" className="btn btn--primary" disabled={converting}>{converting ? "Cloning…" : "Create Real Org"}</button>
+            </div>
+          </form>
+        )}
+        {error && <p className="error-text">{error}</p>}
+      </div>
+    </SectionCard>
+  );
+}
+
 export default function OrgDetailPage() {
   const { slug } = useParams();
   const navigate = useNavigate();
@@ -434,6 +700,7 @@ export default function OrgDetailPage() {
       </div>
 
       <div className="detail-sections">
+        {org.source === "demo" && <DemoActions org={org} onChanged={load} />}
         <BranchSection branches={org.branches} />
         <CatalogSection resources={org.resources} />
         <ImagesSection org={org} />
