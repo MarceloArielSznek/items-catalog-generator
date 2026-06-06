@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { getOrg, deleteOrg, deployOrg, planOrgDeployment, generateOrgLogo, setLogoPlaceholder, cloneToReal } from "../services/orgApi.js";
+import { getMenaiaSettings, hasMenaiaSettings } from "../services/menaiaSettings.js";
 
 function StatBadge({ label, value }) {
   return (
@@ -352,8 +353,6 @@ function ImagePreviewModal({ item, onClose }) {
 }
 
 function DeploySection({ slug, status, onDeployed }) {
-  const [apiUrl, setApiUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
   const [planning, setPlanning] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [plan, setPlan] = useState(null);
@@ -361,21 +360,15 @@ function DeploySection({ slug, status, onDeployed }) {
   const [log, setLog] = useState([]);
   const [result, setResult] = useState(null);
 
+  // Credentials come from the Settings page (browser → request headers), so the
+  // deploy flow no longer prompts for them.
+  const configured = hasMenaiaSettings();
+  const { url: menaiaUrl } = getMenaiaSettings();
+
   const LOG_STATUS_ICONS = { running: "⟳", done: "✓", failed: "✗" };
 
   function options(extra = {}) {
-    return {
-      apiUrl: apiUrl.trim(),
-      apiKey: apiKey.trim(),
-      ...extra,
-    };
-  }
-
-  function clearPlan() {
-    setPlan(null);
-    setConfirmation("");
-    setLog([]);
-    setResult(null);
+    return { ...extra };
   }
 
   async function handlePlan() {
@@ -417,37 +410,24 @@ function DeploySection({ slug, status, onDeployed }) {
     <SectionCard title="Deploy to attic-tech">
       <div className="deploy-panel">
         <div className="deploy-panel__note">
-          Existing-org only. The dry run authenticates with a service-account API key (bound to one organization)
+          Existing-org only. The dry run authenticates with the service-account API key (bound to one organization)
           and shows the planned upserts. Deployment never creates or deletes an organization.
         </div>
 
-        <div className="form-row">
-          <label className="form-label">API Base URL</label>
-          <input
-            className="form-input"
-            placeholder="https://app.your-instance.com"
-            value={apiUrl}
-            onChange={(e) => { setApiUrl(e.target.value); clearPlan(); }}
-            disabled={planning || deploying}
-          />
-        </div>
-
-        <div className="form-row">
-          <label className="form-label">Service Account API Key</label>
-          <input
-            className="form-input form-input--mono"
-            type="password"
-            placeholder="mk_live_… (key scoped to the target org)"
-            value={apiKey}
-            onChange={(e) => { setApiKey(e.target.value); clearPlan(); }}
-            disabled={planning || deploying}
-          />
-        </div>
+        {configured ? (
+          <div className="deploy-panel__note">
+            Using the Menaia credentials from <Link to="/settings">Settings</Link> — target <code>{menaiaUrl}</code>.
+          </div>
+        ) : (
+          <div className="deploy-panel__note deploy-panel__note--warn">
+            No Menaia credentials configured. Add your API key and base URL in <Link to="/settings">Settings</Link> first.
+          </div>
+        )}
 
         <button
           className="btn btn--deploy"
           onClick={handlePlan}
-          disabled={planning || deploying || !apiUrl || !apiKey}
+          disabled={planning || deploying || !configured}
         >
           {planning ? "Checking target…" : "Check target and dry run"}
         </button>

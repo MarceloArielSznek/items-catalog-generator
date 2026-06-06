@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import env from '../config/env.js';
+import { getMenaiaApiKey, getMenaiaApiUrl } from '../config/menaiaContext.js';
 import logger from '../utils/logger.js';
 
 const PAGE_LIMIT = 100;
@@ -167,7 +167,7 @@ export function validateOrgForDeployment(org) {
  * `user` is the calling principal/actor resolved from `GET /v1/me`.
  */
 async function authenticate(credentials, baseUrl) {
-  const apiKey = credentials?.apiKey || env.MENAIA_API_KEY;
+  const apiKey = credentials?.apiKey || getMenaiaApiKey();
   if (!apiKey) throw new Error('A Menaia API key (credentials.apiKey) is required');
 
   const auth = {
@@ -179,7 +179,7 @@ async function authenticate(credentials, baseUrl) {
   };
 
   // Resolve the calling principal (actor) + bound org from /v1/me.
-  const me = await apiCall(baseUrl || env.MENAIA_API_URL, auth, 'GET', '/me');
+  const me = await apiCall(baseUrl || getMenaiaApiUrl(), auth, 'GET', '/me');
   auth.user = {
     id: me?.user?.id ?? null,
     email: me?.user?.email ?? null,

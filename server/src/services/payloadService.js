@@ -1,5 +1,6 @@
-import env, { validateConfig } from "../config/env.js";
+import env from "../config/env.js";
 import logger from "../utils/logger.js";
+import { getMenaiaApiUrl, validateMenaiaConfig } from "../config/menaiaContext.js";
 import { getMenaiaApiKey, probeMenaiaAuth } from "./menaiaAuthService.js";
 
 const API_PREFIX = "/v1";
@@ -64,7 +65,7 @@ export function invalidateCategoriesCache() {
 }
 
 function buildUrl(...segments) {
-  const parts = [env.MENAIA_API_URL, API_PREFIX, ...segments]
+  const parts = [getMenaiaApiUrl(), API_PREFIX, ...segments]
     .filter(Boolean)
     .map((s) => String(s).replace(/^\/+|\/+$/g, ""));
   return parts.join("/");
@@ -102,7 +103,7 @@ async function payloadFetch(url, options = {}) {
 }
 
 export async function getToken() {
-  validateConfig();
+  validateMenaiaConfig();
   return getMenaiaApiKey();
 }
 
@@ -114,7 +115,7 @@ function authHeaders() {
 }
 
 async function fetchAllPages(collection, params = {}) {
-  validateConfig();
+  validateMenaiaConfig();
   const docs = [];
   let page = 1;
   let pageCount = 1;

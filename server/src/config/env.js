@@ -26,6 +26,9 @@ const env = {
     (process.env.ENABLE_ITEM_GENERATOR !== "false" && process.env.NODE_ENV !== "production"),
 
   // Menaia NestJS API. Base URL only — service code appends `/v1`.
+  // The browser is the source of truth (Settings page → `x-menaia-*` headers);
+  // these env values are only a fallback for non-browser callers (scripts/cron).
+  // See config/menaiaContext.js for per-request resolution.
   MENAIA_API_URL: (process.env.MENAIA_API_URL || process.env.API_BASE_URL || "https://app.menaia.com").replace(/\/+$/, ""),
   // Single service-account API key (mk_live_… / mk_test_…), bound to one org.
   MENAIA_API_KEY: process.env.MENAIA_API_KEY || "",
@@ -44,14 +47,5 @@ const env = {
 
 env.MAX_FILE_SIZE_BYTES = env.MAX_FILE_SIZE_MB * 1024 * 1024;
 env.MAX_MEDIA_SIZE_BYTES = env.MAX_MEDIA_SIZE_MB * 1024 * 1024;
-
-export function validateConfig() {
-  const missing = [];
-  if (!env.MENAIA_API_URL) missing.push("MENAIA_API_URL or API_BASE_URL");
-  if (!env.MENAIA_API_KEY) missing.push("MENAIA_API_KEY");
-  if (missing.length > 0) {
-    throw new Error(`Missing Menaia API env vars: ${missing.join(", ")}`);
-  }
-}
 
 export default env;

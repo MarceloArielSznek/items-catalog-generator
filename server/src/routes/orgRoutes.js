@@ -11,6 +11,7 @@ import { downloadImage, findBestImage, findImageCandidates } from '../services/i
 import { generateImage, getAvailableProviders } from '../services/imageProviders.js';
 import { removeBackground as imglyRemoveBackground } from '@imgly/background-removal-node';
 import env from '../config/env.js';
+import { getMenaiaApiUrl, getMenaiaApiKey, validateMenaiaConfig } from '../config/menaiaContext.js';
 import logger from '../utils/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1109,22 +1110,27 @@ router.post('/:slug/bulk-logo-apply', async (req, res) => {
   }
 });
 
+// Credentials (apiUrl + apiKey) now arrive as `x-menaia-*` request headers and
+// are resolved from the request context by the deployment service, so only the
+// plan/confirm fields come from the body.
 function deploymentOptions(body) {
+  // Resolve via the per-request Menaia context (Settings-page headers, falling
+  // back to .env) so the deploy targets the active org/key.
   return {
-    apiUrl: body.apiUrl,
+    apiUrl: getMenaiaApiUrl(),
     expectedOrganizationId: body.expectedOrganizationId,
     confirmation: body.confirmation,
-    credentials: {
-      apiKey: body.apiKey,
-    },
+    credentials: { apiKey: getMenaiaApiKey() },
   };
 }
 
-function validateDeploymentRequest(body) {
-  if (!body.apiUrl || !body.apiKey) {
-    return 'apiUrl and apiKey are required';
+function validateDeploymentRequest() {
+  try {
+    validateMenaiaConfig();
+    return null;
+  } catch (err) {
+    return err.message;
   }
-  return null;
 }
 
 // POST /api/orgs/:slug/deploy/plan — authenticate, resolve scoped org, and calculate a read-only plan
@@ -1132,10 +1138,10 @@ router.post('/:slug/deploy/plan', async (req, res) => {
   try {
     const org = getOrg(req.params.slug);
     if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
-    const validationError = validateDeploymentRequest(req.body);
+    const validationError = validateDeploymentRequest();
     if (validationError) return res.status(400).json({ success: false, error: validationError });
 
-    logger.info(`Planning deployment for ${org.slug} to ${req.body.apiUrl}`);
+    logger.info(`Planning deployment for ${org.slug} to ${getMenaiaApiUrl()}`);
     const plan = await preflightOrgDeployment(org, deploymentOptions(req.body));
     res.json({ success: true, data: plan });
   } catch (err) {
@@ -1149,18 +1155,18 @@ router.post('/:slug/deploy', async (req, res) => {
     const org = getOrg(req.params.slug);
     if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
 
-    const validationError = validateDeploymentRequest(req.body);
+    const validationError = validateDeploymentRequest();
     if (validationError) return res.status(400).json({ success: false, error: validationError });
     if (!req.body.expectedOrganizationId || !req.body.confirmation) {
       return res.status(400).json({ success: false, error: 'Run the deployment plan and confirm its target before deploying' });
     }
 
-    logger.info(`Deploying org ${org.slug} to existing organization ${req.body.expectedOrganizationId} at ${req.body.apiUrl}`);
+    logger.info(`Deploying org ${org.slug} to existing organization ${req.body.expectedOrganizationId} at ${getMenaiaApiUrl()}`);
     const result = await deployOrg(org, deploymentOptions(req.body));
 
     updateDeploymentLog(org.slug, result, {
       id: req.body.expectedOrganizationId,
-      apiUrl: req.body.apiUrl.replace(/\/+$/, ''),
+      apiUrl: getMenaiaApiUrl(),
     });
 
     res.status(result.success ? 200 : 400).json({

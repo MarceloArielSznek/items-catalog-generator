@@ -7718,6 +7718,12 @@ body {
   padding: 12px;
 }
 
+.deploy-panel__note--warn {
+  color: #92400e;
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+
 .form-row { display: flex; flex-direction: column; gap: 6px; }
 
 .form-label {
