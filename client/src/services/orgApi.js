@@ -23,6 +23,28 @@ export const planOrgDeployment = (slug, options) =>
 export const deployOrg = (slug, options) =>
   req('POST', `/${slug}/deploy`, options);
 
+// Downloads the post-deploy users .xlsx and triggers a browser save dialog.
+export async function exportDeployUsers(slug) {
+  const res = await fetch(`${BASE}/${slug}/deploy/export`);
+  if (!res.ok) {
+    let message = 'Export failed';
+    try { message = (await res.json()).error || message; } catch { /* non-JSON */ }
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="?([^"]+)"?/);
+  const filename = match ? match[1] : `${slug}-deploy-users.xlsx`;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const updateOrgSettings = (slug, patch) =>
   req('PATCH', `/${slug}/settings`, patch);
 
@@ -139,8 +161,12 @@ export function cloneToReal(slug, realData) {
   return req('POST', `/${slug}/clone-to-real`, realData);
 }
 
-export function bulkApplyOrgLogo(slug) {
-  return fetch(`/api/orgs/${slug}/bulk-logo-apply`, { method: 'POST' })
+export function bulkApplyOrgLogo(slug, overlay = {}) {
+  return fetch(`/api/orgs/${slug}/bulk-logo-apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(overlay),
+  })
     .then((r) => r.json())
     .then((j) => { if (!j.success) throw new Error(j.error); return j.data; });
 }

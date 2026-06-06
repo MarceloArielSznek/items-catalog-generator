@@ -495,6 +495,18 @@ const LOGO_VARIANTS = [
   { id: "default", label: "Default", bg: "#f3f4f6", hint: "Fallback variant" },
 ];
 
+const LOGO_CORNERS = [
+  { id: "top-left",     label: "↖" },
+  { id: "top-right",    label: "↗" },
+  { id: "bottom-left",  label: "↙" },
+  { id: "bottom-right", label: "↘" },
+];
+
+const DEFAULT_LOGO_OVERLAY = {
+  position: "bottom-left",
+  backdrop: { enabled: false, shape: "ellipse", color: "auto", opacity: 0.4 },
+};
+
 function LogoPanel({ org }) {
   const { slug } = org;
   const [variants, setVariants] = useState([]);
@@ -506,7 +518,17 @@ function LogoPanel({ org }) {
   const [sources, setSources] = useState([]);
   const [importFrom, setImportFrom] = useState("");
   const [importing, setImporting] = useState(false);
+  const [overlay, setOverlay] = useState(() => ({
+    ...DEFAULT_LOGO_OVERLAY,
+    ...(org.logoOverlay || {}),
+    backdrop: { ...DEFAULT_LOGO_OVERLAY.backdrop, ...(org.logoOverlay?.backdrop || {}) },
+  }));
+  const [savingOverlay, setSavingOverlay] = useState(false);
+  const [overlaySaved, setOverlaySaved] = useState(false);
   const fileRefs = useRef({});
+
+  const setBackdrop = (patch) =>
+    setOverlay((o) => ({ ...o, backdrop: { ...o.backdrop, ...patch } }));
 
   useEffect(() => {
     listOrgLogos(slug)
@@ -562,12 +584,28 @@ function LogoPanel({ org }) {
     }
   }
 
+  async function handleSaveOverlay() {
+    setSavingOverlay(true);
+    setError(null);
+    try {
+      await updateOrgSettings(slug, { logoOverlay: overlay });
+      setOverlaySaved(true);
+      setTimeout(() => setOverlaySaved(false), 2500);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingOverlay(false);
+    }
+  }
+
   async function handleBulkApply() {
     setApplying(true);
     setResult(null);
     setError(null);
     try {
-      const data = await bulkApplyOrgLogo(slug);
+      // Persist the current overlay config, then stamp every image with it.
+      await updateOrgSettings(slug, { logoOverlay: overlay });
+      const data = await bulkApplyOrgLogo(slug, overlay);
       setResult(data);
     } catch (err) {
       setError(err.message);
@@ -666,6 +704,108 @@ function LogoPanel({ org }) {
           </div>
         )}
         {error && <div className="org-logo-error">{error}</div>}
+      </Card>
+
+      <Card
+        title="Logo Placement & Backdrop"
+        description="Choose the corner and an optional translucent oval/plate behind the logo so it stays legible over light or busy photos. Applies to the catalog stamp and the deploy."
+      >
+        <div className="logo-overlay-config">
+          <label className="logo-overlay-config__toggle">
+            <input
+              type="checkbox"
+              checked={overlay.position === "auto"}
+              onChange={(e) => setOverlay((o) => ({ ...o, position: e.target.checked ? "auto" : "bottom-left" }))}
+            />
+            <span>Auto-detect the best corner per image</span>
+          </label>
+
+          <div className="logo-overlay-config__field">
+            <span className="logo-overlay-config__label">
+              {overlay.position === "auto" ? "Corner (chosen per image)" : "Corner"}
+            </span>
+            <div className={`logo-corner-grid ${overlay.position === "auto" ? "logo-corner-grid--disabled" : ""}`}>
+              {LOGO_CORNERS.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  disabled={overlay.position === "auto"}
+                  className={`logo-corner-grid__cell ${overlay.position === c.id ? "logo-corner-grid__cell--active" : ""}`}
+                  onClick={() => setOverlay((o) => ({ ...o, position: c.id }))}
+                  title={c.id.replace("-", " ")}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+            {overlay.position === "auto" && (
+              <span className="logo-overlay-config__hint">
+                Each image gets the calmest, least-busy corner automatically.
+              </span>
+            )}
+          </div>
+
+          <label className="logo-overlay-config__toggle">
+            <input
+              type="checkbox"
+              checked={overlay.backdrop.enabled}
+              onChange={(e) => setBackdrop({ enabled: e.target.checked })}
+            />
+            <span>Add a backdrop behind the logo</span>
+          </label>
+
+          {overlay.backdrop.enabled && (
+            <div className="logo-overlay-config__grid">
+              <div className="logo-overlay-config__field">
+                <span className="logo-overlay-config__label">Shape</span>
+                <select
+                  className="settings-input"
+                  value={overlay.backdrop.shape}
+                  onChange={(e) => setBackdrop({ shape: e.target.value })}
+                >
+                  <option value="ellipse">Oval</option>
+                  <option value="rounded">Rounded plate</option>
+                </select>
+              </div>
+
+              <div className="logo-overlay-config__field">
+                <span className="logo-overlay-config__label">Color</span>
+                <select
+                  className="settings-input"
+                  value={overlay.backdrop.color}
+                  onChange={(e) => setBackdrop({ color: e.target.value })}
+                >
+                  <option value="auto">Auto (contrast with photo)</option>
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                </select>
+              </div>
+
+              <div className="logo-overlay-config__field">
+                <span className="logo-overlay-config__label">
+                  Opacity · {Math.round(overlay.backdrop.opacity * 100)}%
+                </span>
+                <input
+                  type="range"
+                  min="5"
+                  max="90"
+                  step="5"
+                  value={Math.round(overlay.backdrop.opacity * 100)}
+                  onChange={(e) => setBackdrop({ opacity: Number(e.target.value) / 100 })}
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="logo-overlay-config__actions">
+            <button className="btn btn--secondary" onClick={handleSaveOverlay} disabled={savingOverlay}>
+              {savingOverlay ? "Saving…" : overlaySaved ? "Saved ✓" : "Save placement"}
+            </button>
+            <span className="logo-overlay-config__hint">
+              Saved automatically when you apply to the catalog.
+            </span>
+          </div>
+        </div>
       </Card>
 
       <Card

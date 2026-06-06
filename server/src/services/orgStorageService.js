@@ -80,6 +80,8 @@ export function updateDeploymentLog(slug, result, target) {
       organizationId: result.organizationId || target?.id || null,
       actions: result.actions || [],
       log: result.log || [],
+      credentials: result.credentials || [],
+      userCount: (result.credentials || []).length,
       lastError: result.error || null,
     },
     status: succeeded ? 'deployed' : 'partial',

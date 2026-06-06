@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { crawlWebsite, crawlDemo, generateSeed, parseXlsx } from "../services/seedApi.js";
+import { crawlWebsite, crawlDemo, generateSeed, parseXlsx, generateContext } from "../services/seedApi.js";
 import { setLogoPlaceholder } from "../services/orgApi.js";
 import "../styles/SeedGeneratorPage.css";
 
@@ -327,6 +327,8 @@ function StepPricebookTargets({ data, onNext, onBack }) {
   const [mode, setMode] = useState("ai");
   const [totalItems, setTotalItems] = useState(60);
   const [industryContext, setIndustryContext] = useState("");
+  const [ctxLoading, setCtxLoading] = useState(false);
+  const [ctxError, setCtxError] = useState("");
   const fileRef = useRef(null);
   const [xlsxLoading, setXlsxLoading] = useState(false);
   const [xlsxResult, setXlsxResult] = useState(null);
@@ -350,6 +352,28 @@ function StepPricebookTargets({ data, onNext, onBack }) {
       setXlsxError(err.message);
     } finally {
       setXlsxLoading(false);
+    }
+  };
+
+  const handleGenerateContext = async () => {
+    setCtxError("");
+    setCtxLoading(true);
+    try {
+      const info = data.companyInfo || {};
+      const ex = data.extracted || {};
+      const text = await generateContext({
+        companyName: info.companyName || ex.companyName || "",
+        industry: ex.industry || "",
+        region: ex.region || "",
+        about: ex.about || "",
+        website: info.companyWebsite || "",
+        isDemo: Boolean(info.isDemo),
+      });
+      setIndustryContext(text);
+    } catch (err) {
+      setCtxError(err.message);
+    } finally {
+      setCtxLoading(false);
     }
   };
 
@@ -410,8 +434,20 @@ function StepPricebookTargets({ data, onNext, onBack }) {
           </div>
 
           <label className="sg-label-block">
-            Additional Industry Context
-            <span className="sg-label-optional">optional</span>
+            <span className="sg-context-label-row">
+              <span>
+                Additional Industry Context
+                <span className="sg-label-optional">optional</span>
+              </span>
+              <button
+                type="button"
+                className="sg-generate-context-btn"
+                onClick={handleGenerateContext}
+                disabled={ctxLoading}
+              >
+                {ctxLoading ? "Generating…" : "✨ Generate with AI"}
+              </button>
+            </span>
             <textarea
               rows={4}
               className="sg-textarea"
@@ -419,6 +455,7 @@ function StepPricebookTargets({ data, onNext, onBack }) {
               value={industryContext}
               onChange={(e) => setIndustryContext(e.target.value)}
             />
+            {ctxError && <span className="sg-error">{ctxError}</span>}
           </label>
         </div>
       )}

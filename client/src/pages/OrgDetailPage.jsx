@@ -353,6 +353,7 @@ function ImagePreviewModal({ item, onClose }) {
 }
 
 function DeploySection({ slug, status, onDeployed }) {
+  const navigate = useNavigate();
   const [planning, setPlanning] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [plan, setPlan] = useState(null);
@@ -399,6 +400,9 @@ function DeploySection({ slug, status, onDeployed }) {
       setLog(res.log || []);
       setResult({ success: true, credentials: res.credentials || [] });
       onDeployed?.();
+      // Land on the dedicated post-deploy page (results + Excel export). It reads
+      // the now-persisted deployment log, so credentials survive a refresh.
+      navigate(`/orgs/${slug}/deploy-result`);
     } catch (e) {
       setResult({ success: false, error: e.message });
     } finally {
@@ -664,6 +668,9 @@ export default function OrgDetailPage() {
       <div className="detail-nav">
         <button className="btn-back" onClick={() => navigate("/")}>← Orgs</button>
         <div className="detail-nav__actions">
+          {org.deployment?.lastDeployedAt && (
+            <button className="btn btn--secondary" onClick={() => navigate(`/orgs/${org.slug}/deploy-result`)}>Deploy results</button>
+          )}
           <button className="btn btn--secondary" onClick={() => navigate(`/orgs/${org.slug}/settings`)}>Settings</button>
           <button className="btn btn--danger-outline" onClick={handleDelete}>Delete</button>
         </div>

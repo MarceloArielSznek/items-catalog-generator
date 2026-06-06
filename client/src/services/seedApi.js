@@ -33,6 +33,19 @@ export async function parseXlsx(file) {
   return data.data;
 }
 
+// Ask the AI to draft the optional "Additional Industry Context" hint from the
+// company info collected so far. Returns a short editable paragraph.
+export async function generateContext(payload) {
+  const res = await fetch(`${API_BASE}/seed/generate-context`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error || 'Context generation failed');
+  return data.data.industryContext;
+}
+
 export async function generateSeed(input, extracted, pricebook = null) {
   const res = await fetch(`${API_BASE}/seed/generate`, {
     method: 'POST',

@@ -616,3 +616,35 @@
   color: #6b7280;
   font-size: 12px;
 }
+
+/* ── Generate Industry Context with AI ── */
+.sg-context-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.sg-generate-context-btn {
+  background: #fff;
+  color: #1a6b3c;
+  border: 1px solid #1a6b3c;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.sg-generate-context-btn:hover:not(:disabled) {
+  background: #1a6b3c;
+  color: #fff;
+}
+
+.sg-generate-context-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

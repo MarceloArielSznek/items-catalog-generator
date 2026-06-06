@@ -190,20 +190,41 @@ async function authenticate(credentials, baseUrl) {
   return auth;
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// How many times to retry a request that the API throttles (HTTP 429) before
+// giving up, and the base delay for exponential backoff between attempts.
+const MAX_RETRIES_429 = 6;
+const RETRY_BASE_MS = 1000;
+
 async function apiCall(baseUrl, auth, method, path, body) {
-  const response = await fetch(`${apiBaseUrl(baseUrl)}${path}`, {
-    method,
-    headers: auth.headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await response.text();
-  let result;
-  try { result = text ? JSON.parse(text) : null; } catch { result = text; }
-  if (!response.ok) {
-    const message = result?.errors?.[0]?.message || result?.message || result || response.statusText;
-    throw new Error(`${method} /v1${path} -> ${response.status}: ${message}`);
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetch(`${apiBaseUrl(baseUrl)}${path}`, {
+      method,
+      headers: auth.headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await response.text();
+    let result;
+    try { result = text ? JSON.parse(text) : null; } catch { result = text; }
+    if (!response.ok) {
+      // The Menaia API throttles bursts (e.g. the per-item image flow fires 3
+      // calls each). On 429, back off and retry instead of failing the row —
+      // honour Retry-After when present, else exponential backoff with jitter.
+      if (response.status === 429 && attempt < MAX_RETRIES_429) {
+        const retryAfter = Number(response.headers.get('retry-after'));
+        const wait = Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : RETRY_BASE_MS * 2 ** attempt + Math.floor(Math.random() * 250);
+        logger.warn(`[deploy] 429 on ${method} /v1${path} — retry ${attempt + 1}/${MAX_RETRIES_429} in ${wait}ms`);
+        await sleep(wait);
+        continue;
+      }
+      const message = result?.errors?.[0]?.message || result?.message || result || response.statusText;
+      throw new Error(`${method} /v1${path} -> ${response.status}: ${message}`);
+    }
+    return result;
   }
-  return result;
 }
 
 // Lists paginate as `{ data: [...], meta: { pagination: { page, pageCount, ... } } }`.
@@ -609,6 +630,10 @@ export async function deployOrg(org, options, onStep) {
         imageFailures.push(`${item.name}: ${err.message}`);
         logger.warn(`[deploy] item image upload failed for "${item.name}": ${err.message}`);
       }
+      // Pace the loop: each item fires 3 API calls (presign + register + PATCH),
+      // so a brief gap keeps bursts under the API's rate limit. apiCall() still
+      // retries any 429 that slips through with backoff.
+      await sleep(250);
     }
     // Surface failures instead of silently swallowing them: a non-zero failure
     // count marks the step failed (red) with the count + first error, and every
@@ -864,7 +889,13 @@ export async function deployOrg(org, options, onStep) {
           branchIds,
         });
         action('users', 'created', user.email, result.id);
-        credentials.push({ email: user.email, password, role: user.role });
+        credentials.push({
+          email: user.email,
+          password,
+          role: user.role,
+          name: user.name || '',
+          branches: user.branches || [],
+        });
         userCount += 1;
       } catch (err) {
         step('users', 'running', `skipped ${user.email}: ${err.message}`);

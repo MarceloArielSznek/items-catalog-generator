@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import multer from 'multer';
 import sharp from 'sharp';
 import OpenAI from 'openai';
+import * as XLSX from 'xlsx';
 import { listOrgs, getOrg, saveOrg, updateOrg, deleteOrg, updateDeploymentLog } from '../services/orgStorageService.js';
 import { deployOrg, preflightOrgDeployment } from '../services/deploymentService.js';
 import { downloadImage, findBestImage, findImageCandidates } from '../services/imageSearchService.js';
@@ -76,15 +77,137 @@ async function buildLogoPlaceholder(label = 'YOUR LOGO') {
 
 // ── Logo compositing ─────────────────────────────────────────────────────────
 
+// Default config for the optional logo backdrop ("scrim") — a soft translucent
+// oval/rounded plate painted behind the logo so it stays legible over busy or
+// light photos. Disabled by default; enabled + tuned per-org from Settings.
+export const LOGO_BACKDROP_DEFAULTS = { enabled: false, shape: 'ellipse', color: 'auto', opacity: 0.5 };
+
+function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+
+// Mean luminance of the logo's *opaque* pixels (0–255). Drives the auto backdrop
+// colour: a light logo needs a dark plate to read, and vice-versa — contrast is
+// against the logo itself, not the photo behind it.
+async function logoMeanLuminance(logoBuffer) {
+  try {
+    const { data, info } = await sharp(logoBuffer)
+      .resize(32, 32, { fit: 'inside' })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const ch = info.channels;
+    let lum = 0, n = 0;
+    for (let i = 0; i < data.length; i += ch) {
+      const a = ch === 4 ? data[i + 3] : 255;
+      if (a < 32) continue; // ignore transparent padding
+      lum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      n++;
+    }
+    return n ? lum / n : 128;
+  } catch {
+    return 128;
+  }
+}
+
+// Coerce an untrusted backdrop config (from settings or request body) into a
+// known-good shape, falling back to defaults for any missing/invalid field.
+export function normalizeLogoBackdrop(backdrop) {
+  const b = backdrop || {};
+  return {
+    enabled: !!b.enabled,
+    shape: ['ellipse', 'rounded'].includes(b.shape) ? b.shape : LOGO_BACKDROP_DEFAULTS.shape,
+    color: ['auto', 'dark', 'light'].includes(b.color) ? b.color : LOGO_BACKDROP_DEFAULTS.color,
+    opacity: clamp(typeof b.opacity === 'number' ? b.opacity : LOGO_BACKDROP_DEFAULTS.opacity, 0.05, 0.9),
+  };
+}
+
+// Build a full-canvas transparent layer holding a single blurred ellipse/rounded
+// plate centred on the logo. Full-canvas keeps the geometry simple (no negative
+// composite offsets when the plate bleeds past a corner). `color: 'auto'` picks
+// a plate that *contrasts the logo* (dark plate for a light logo, light for a
+// dark one) so the mark always reads, regardless of what's behind it.
+async function buildLogoBackdrop(imageBuffer, { left, top, rw, rh, W, H, cfg, logoBuffer }) {
+  const padX = Math.round(rw * 0.45);
+  const padY = Math.round(rh * 0.55);
+  const cx = left + rw / 2;
+  const cy = top + rh / 2;
+  const rx = rw / 2 + padX;
+  const ry = rh / 2 + padY;
+
+  let dark = cfg.color === 'dark';
+  if (cfg.color === 'auto') {
+    const lum = await logoMeanLuminance(logoBuffer);
+    dark = lum > 140; // light logo → dark plate
+  }
+  const rgb = dark ? '15,23,42' : '255,255,255';
+  const o = cfg.opacity.toFixed(3);
+
+  let shape;
+  if (cfg.shape === 'rounded') {
+    const bw = rw + padX * 2;
+    const bh = rh + padY * 2;
+    const r = Math.round(Math.min(bw, bh) * 0.32);
+    shape = `<rect x="${(cx - bw / 2).toFixed(1)}" y="${(cy - bh / 2).toFixed(1)}" width="${bw}" height="${bh}" rx="${r}" ry="${r}" fill="rgba(${rgb},${o})"/>`;
+  } else {
+    shape = `<ellipse cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" rx="${rx.toFixed(1)}" ry="${ry.toFixed(1)}" fill="rgba(${rgb},${o})"/>`;
+  }
+  const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">${shape}</svg>`;
+  const blur = Math.max(4, Math.round(Math.min(rx, ry) * 0.35));
+  const scrimBuf = await sharp(Buffer.from(svg)).blur(blur).png().toBuffer();
+  return { input: scrimBuf, left: 0, top: 0 };
+}
+
+// Auto-pick the corner where a watermark reads best: the *calmest* one (lowest
+// luminance variance → flattest, least-detailed area), so the logo doesn't land
+// on a busy subject. The backdrop already handles contrast, so busyness — not
+// brightness — is the right signal. Returns a corner position string.
+async function pickLogoCorner(imageBuffer, W, H) {
+  const zone = Math.min(Math.round(W * 0.30), Math.round(H * 0.30));
+  if (!zone) return 'bottom-left';
+  const corners = [
+    { name: 'top-left',     left: 0,        top: 0 },
+    { name: 'top-right',    left: W - zone, top: 0 },
+    { name: 'bottom-left',  left: 0,        top: H - zone },
+    { name: 'bottom-right', left: W - zone, top: H - zone },
+  ];
+  const scored = await Promise.all(corners.map(async (c) => {
+    try {
+      const { data } = await sharp(imageBuffer)
+        .extract({ left: Math.max(0, c.left), top: Math.max(0, c.top), width: zone, height: zone })
+        .greyscale()
+        .resize(16, 16, { fit: 'fill' })
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i];
+      const mean = sum / data.length;
+      let varSum = 0;
+      for (let i = 0; i < data.length; i++) { const d = data[i] - mean; varSum += d * d; }
+      return { name: c.name, std: Math.sqrt(varSum / data.length) };
+    } catch {
+      return { name: c.name, std: Number.POSITIVE_INFINITY };
+    }
+  }));
+  scored.sort((a, b) => a.std - b.std);
+  logger.info(`Auto logo corner: ${scored[0].name} (busyness ${scored[0].std.toFixed(1)})`);
+  return scored[0].name;
+}
+
 /**
  * Composite the org's logo as a clean corner watermark: one full-colour variant,
- * a fixed corner (default bottom-left), no scrim — predictable, like a normal
- * watermark. `position` ∈ bottom-left | bottom-right | top-left | top-right.
+ * a fixed corner (default bottom-left). `position` ∈ auto | bottom-left |
+ * bottom-right | top-left | top-right. `auto` scans each photo and picks the
+ * calmest corner. Pass `backdrop` to paint a translucent oval/rounded plate
+ * behind the logo so it reads on light or busy photos.
  */
-async function composeLogo(imageBuffer, slug, logoVariants, position = 'bottom-left') {
+async function composeLogo(imageBuffer, slug, logoVariants, position = 'bottom-left', backdrop = null) {
   const meta = await sharp(imageBuffer).metadata();
   const W = meta.width, H = meta.height;
   const margin = Math.round(W * 0.04);
+
+  // Resolve an "auto" placement to a concrete corner for this specific photo.
+  if (position === 'auto') {
+    position = await pickLogoCorner(imageBuffer, W, H);
+  }
 
   // Always the real, full-colour logo — no brightness-based variant switching.
   const variant = ['color', 'default'].find((v) => logoVariants.includes(v)) || logoVariants[0];
@@ -114,8 +237,22 @@ async function composeLogo(imageBuffer, slug, logoVariants, position = 'bottom-l
   const left = isRight ? W - rw - margin : margin;
   const top = isTop ? margin : H - rh - margin;
 
+  const layers = [];
+
+  // Optional translucent backdrop so the logo reads on busy / light photos.
+  const cfg = normalizeLogoBackdrop(backdrop);
+  if (cfg.enabled) {
+    try {
+      layers.push(await buildLogoBackdrop(imageBuffer, { left, top, rw, rh, W, H, cfg, logoBuffer: logoResized }));
+    } catch (err) {
+      logger.warn(`Logo backdrop failed, skipping: ${err.message}`);
+    }
+  }
+
+  layers.push({ input: logoResized, left, top });
+
   const buffer = await sharp(imageBuffer)
-    .composite([{ input: logoResized, left, top }])
+    .composite(layers)
     .jpeg({ quality: 92 })
     .toBuffer();
   return { buffer, variant, position };
@@ -493,7 +630,7 @@ router.patch('/:slug/settings', (req, res) => {
     const org = getOrg(req.params.slug);
     if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
 
-    const { orgInfo, branchConfig, financingTerms, proposalContent, imageStyle } = req.body;
+    const { orgInfo, branchConfig, financingTerms, proposalContent, imageStyle, logoOverlay } = req.body;
     let updated = { ...org };
 
     if (orgInfo) {
@@ -519,6 +656,17 @@ router.patch('/:slug/settings', (req, res) => {
 
     if (imageStyle !== undefined) {
       updated.imageStyle = imageStyle;
+    }
+
+    // Logo overlay config (corner + translucent backdrop) used when stamping the
+    // logo onto every catalog image. Normalize the backdrop so only known fields persist.
+    if (logoOverlay !== undefined) {
+      const validPositions = ['auto', 'bottom-left', 'bottom-right', 'top-left', 'top-right'];
+      const lo = logoOverlay || {};
+      updated.logoOverlay = {
+        position: validPositions.includes(lo.position) ? lo.position : 'bottom-left',
+        backdrop: normalizeLogoBackdrop(lo.backdrop),
+      };
     }
 
     saveOrg(updated);
@@ -1054,8 +1202,16 @@ router.post('/:slug/bulk-logo-apply', async (req, res) => {
     const org = getOrg(slug);
     if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
 
-    const validPositions = ['bottom-left', 'bottom-right', 'top-left', 'top-right'];
-    const position = validPositions.includes(req.body?.position) ? req.body.position : 'bottom-left';
+    const validPositions = ['auto', 'bottom-left', 'bottom-right', 'top-left', 'top-right'];
+    // Prefer the request body (live config from Settings), then the saved org
+    // overlay config, then defaults.
+    const savedOverlay = org.logoOverlay || {};
+    const position = validPositions.includes(req.body?.position)
+      ? req.body.position
+      : (validPositions.includes(savedOverlay.position) ? savedOverlay.position : 'bottom-left');
+    const backdrop = normalizeLogoBackdrop(
+      req.body?.backdrop !== undefined ? req.body.backdrop : savedOverlay.backdrop
+    );
 
     const logoDir = orgLogoDir(slug);
     let logoVariants = [];
@@ -1082,7 +1238,7 @@ router.post('/:slug/bulk-logo-apply', async (req, res) => {
 
         try {
           const imageBuffer = fs.readFileSync(imgPath);
-          const { buffer: finalBuffer } = await composeLogo(imageBuffer, slug, logoVariants, position);
+          const { buffer: finalBuffer } = await composeLogo(imageBuffer, slug, logoVariants, position, backdrop);
 
           // Save as {key}__logo.jpg — original stays untouched
           const logoKey = `${key}__logo`;
@@ -1174,6 +1330,78 @@ router.post('/:slug/deploy', async (req, res) => {
       data: result,
       error: result.error,
     });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/orgs/:slug/deploy/export — download an .xlsx of the users created on
+// the last deploy (sheet 1) plus a deploy summary (sheet 2). Reads the persisted
+// deployment log, so it works on any revisit after a successful deploy.
+router.get('/:slug/deploy/export', (req, res) => {
+  try {
+    const org = getOrg(req.params.slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+
+    const deployment = org.deployment;
+    if (!deployment || !deployment.lastDeployedAt) {
+      return res.status(400).json({ success: false, error: 'This org has not been deployed yet' });
+    }
+
+    const credentials = deployment.credentials || [];
+
+    // Sheet 1 — created users (one row per credential).
+    const userRows = credentials.map((c) => ({
+      Name: c.name || '',
+      Email: c.email || '',
+      Password: c.password || '',
+      Role: c.role || '',
+      Branches: (c.branches || []).join(', '),
+    }));
+    const usersSheet = XLSX.utils.json_to_sheet(
+      userRows.length ? userRows : [{ Name: '', Email: '', Password: '', Role: '', Branches: '' }]
+    );
+
+    // Sheet 2 — deploy summary: target + per-collection action counts.
+    const actions = deployment.actions || [];
+    const byCollection = {};
+    for (const a of actions) {
+      const key = a.collection || 'other';
+      byCollection[key] = byCollection[key] || { created: 0, updated: 0 };
+      if (a.operation === 'updated') byCollection[key].updated += 1;
+      else byCollection[key].created += 1;
+    }
+    const summaryRows = [
+      { Field: 'Organization', Value: org.name || org.slug },
+      { Field: 'Slug', Value: org.slug },
+      { Field: 'Status', Value: org.status || '' },
+      { Field: 'Deployed at', Value: deployment.lastDeployedAt },
+      { Field: 'Target org', Value: deployment.target?.name || '' },
+      { Field: 'Target ID', Value: deployment.organizationId || '' },
+      { Field: 'API URL', Value: deployment.target?.apiUrl || '' },
+      { Field: 'Deployed by', Value: deployment.actor?.email || '' },
+      { Field: 'Users created', Value: credentials.length },
+      { Field: 'Total actions', Value: actions.length },
+      { Field: '', Value: '' },
+      { Field: 'Collection', Value: 'Created / Updated' },
+      ...Object.entries(byCollection).map(([collection, counts]) => ({
+        Field: collection,
+        Value: `${counts.created} / ${counts.updated}`,
+      })),
+    ];
+    const summarySheet = XLSX.utils.json_to_sheet(summaryRows, { skipHeader: true });
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, usersSheet, 'Users');
+    XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary');
+
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const datePart = (deployment.lastDeployedAt || '').slice(0, 10);
+    const filename = `${org.slug}-deploy-users${datePart ? `-${datePart}` : ''}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

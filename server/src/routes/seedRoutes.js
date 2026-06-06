@@ -103,6 +103,55 @@ router.post('/demo/crawl', async (req, res, next) => {
   }
 });
 
+// POST /api/seed/generate-context — AI-write the optional "Additional Industry
+// Context" hint shown in the catalog step, from the company info gathered so far.
+// Returns a short paragraph the user can edit before generating the price book.
+router.post('/generate-context', async (req, res, next) => {
+  try {
+    const { companyName, industry, region, about, website, isDemo } = req.body || {};
+    if (!industry && !companyName && !about) {
+      return res.status(400).json({ success: false, error: 'Provide at least an industry or company name' });
+    }
+
+    const apiKey = env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(500).json({ success: false, error: 'OPENAI_API_KEY not configured' });
+    const openai = new OpenAI({ apiKey });
+
+    const facts = [
+      companyName && `Company: ${companyName}`,
+      industry && `Industry: ${industry}`,
+      region && `Region / market: ${region}`,
+      website && `Website: ${website}`,
+      about && `About: ${about}`,
+      isDemo && 'This is a synthetic demo organization.',
+    ].filter(Boolean).join('\n');
+
+    logger.info(`Generating industry context for ${companyName || industry}`);
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      max_tokens: 220,
+      temperature: 0.7,
+      messages: [
+        {
+          role: 'user',
+          content: `You write a short "industry context" hint that guides an AI price-book generator for a home-services/contractor company. Use the facts below to describe what services to emphasize, the typical scope, and the customer segment, so the generated catalog is accurate for THIS company.
+
+${facts}
+
+Write 2-4 concise sentences (no bullet points, no preamble, no headings). Focus on the specific services, scope, and customer type. Do not invent contact details or prices.`,
+        },
+      ],
+    });
+
+    const industryContext = response.choices?.[0]?.message?.content?.trim() || '';
+    if (!industryContext) return res.status(502).json({ success: false, error: 'AI returned no content' });
+
+    res.json({ success: true, data: { industryContext } });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/seed/parse-xlsx — parse an uploaded pricebook Excel file
 router.post('/parse-xlsx', upload.single('file'), async (req, res, next) => {
   try {
