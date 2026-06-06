@@ -144,9 +144,6 @@ const BRANCH_CONFIG_FIELDS = [
   { key: "b2bMaxDiscount", label: "B2B Max Discount (%)", hint: "Max % discount for business customers", type: "number", step: "0.1" },
   { key: "bonusPoolPercentage", label: "Bonus Pool (%)", hint: "% of revenue allocated to crew bonus pool", type: "number", step: "0.1" },
   { key: "bonusPayoutCutoff", label: "Bonus Payout Cutoff", hint: "Performance score cutoff for bonus eligibility", type: "number", step: "1" },
-  { key: "financeFactors_3", label: "Finance Factor (3 mo.)", hint: "Markup factor for 3-month financing", type: "number", step: "0.01" },
-  { key: "financeFactors_6", label: "Finance Factor (6 mo.)", hint: "Markup factor for 6-month financing", type: "number", step: "0.01" },
-  { key: "financeFactors_12", label: "Finance Factor (12 mo.)", hint: "Markup factor for 12-month financing", type: "number", step: "0.01" },
 ];
 
 function BranchConfigPanel({ org, onSaved }) {

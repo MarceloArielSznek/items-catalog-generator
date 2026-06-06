@@ -188,10 +188,7 @@ Return JSON with this exact shape:
     "qualityControlVisitPrice": number,
     "bonusPoolPercentage": number,
     "bonusPayoutCutoff": number,
-    "leaderboardColorPercentage": number,
-    "financeFactors_3": number,
-    "financeFactors_6": number,
-    "financeFactors_12": number
+    "leaderboardColorPercentage": number
   },
   "proposalContent": {
     "disclaimer": "string",

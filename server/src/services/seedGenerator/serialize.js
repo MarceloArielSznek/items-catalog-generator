@@ -94,9 +94,6 @@ const BRANCH_CONFIG_DEFAULTS = {
   bonusPoolPercentage: 8,
   bonusPayoutCutoff: 75,
   leaderboardColorPercentage: 20,
-  financeFactors_3: 1.05,
-  financeFactors_6: 1.10,
-  financeFactors_12: 1.15,
 };
 
 const PROPOSAL_CONTENT_DEFAULTS = {
@@ -163,9 +160,6 @@ function buildBranches(input, extracted, pricebookBranchConfig, proposalContent)
     bonusPoolPercentage: cfg.bonusPoolPercentage,
     bonusPayoutCutoff: cfg.bonusPayoutCutoff,
     leaderboardColorPercentage: cfg.leaderboardColorPercentage,
-    financeFactors_3: cfg.financeFactors_3,
-    financeFactors_6: cfg.financeFactors_6,
-    financeFactors_12: cfg.financeFactors_12,
     branchPaymentMethods: DEFAULT_PAYMENT_METHODS,
     branchFinancingTerms: financing,
   }));

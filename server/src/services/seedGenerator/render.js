@@ -78,9 +78,6 @@ ${financingTerms},
   bonusPoolPercentage: '0.10',
   bonusPayoutCutoff: '80',
   leaderboardColorPercentage: '25',
-  financeFactors_3: '1.05',
-  financeFactors_6: '1.10',
-  financeFactors_12: '1.15',
 };`;
 }
 
