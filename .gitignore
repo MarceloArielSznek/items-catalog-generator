@@ -44,4 +44,5 @@ server/src/library/
 .cursor/
 
 
-# .DEV_API_KEYS.md
+# Local dev service-account keys — never commit (repo is public)
+.DEV_API_KEYS.md
