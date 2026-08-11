@@ -6,6 +6,7 @@ import { crawlWebsite } from '../services/seedGenerator/crawl.js';
 import { extractWebsiteData } from '../services/seedGenerator/extract.js';
 import { buildDemoSource } from '../services/seedGenerator/mergeDemo.js';
 import { generatePricebook } from '../services/seedGenerator/research.js';
+import { generateMultiIndustryDemo, createMultiIndustryShell } from '../services/seedGenerator/multiIndustryDemo.js';
 import { serializeOrganization } from '../services/seedGenerator/serialize.js';
 import { generateSourceLedger } from '../services/seedGenerator/ledger.js';
 import { parsePricebookXlsx } from '../services/seedGenerator/parseXlsx.js';
@@ -238,6 +239,59 @@ router.post('/generate', async (req, res, next) => {
     });
   } catch (err) {
     next(err);
+  }
+});
+
+// POST /api/seed/multi-industry/shell — create a multi-industry org SHELL: fake
+// identity + one branch + default config + default users + one EMPTY work area
+// per industry. Fast (one identity call, no pricebook o3). Catalogs are filled
+// per work area afterward. Returns the saved org.
+router.post('/multi-industry/shell', async (req, res, next) => {
+  try {
+    const apiKey = env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(500).json({ success: false, error: 'OPENAI_API_KEY not configured' });
+    const openai = new OpenAI({ apiKey });
+    const org = await createMultiIndustryShell(
+      { industries: req.body?.industries, region: req.body?.region, companyName: req.body?.companyName },
+      openai,
+    );
+    res.json({ success: true, data: { org, slug: org.slug, stats: org.stats } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/seed/generate-multi-industry — build a synthetic multi-industry demo
+// org (one work area per industry, each with its own categories/items + a random
+// fake identity). Streams progress as SSE since it fires one o3 pricebook call
+// per industry. Images are generated later via the bulk-image flow.
+router.post('/generate-multi-industry', async (req, res) => {
+  const apiKey = env.OPENAI_API_KEY;
+  if (!apiKey) return res.status(500).json({ success: false, error: 'OPENAI_API_KEY not configured' });
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  try {
+    const openai = new OpenAI({ apiKey });
+    const params = {
+      industries: req.body?.industries,
+      industryCount: req.body?.industryCount,
+      categoriesPerIndustry: req.body?.categoriesPerIndustry,
+      itemsPerCategory: req.body?.itemsPerCategory,
+      region: req.body?.region,
+    };
+    logger.info(`Generating multi-industry demo: ${JSON.stringify(params)}`);
+    const result = await generateMultiIndustryDemo(params, openai, (entry) => send({ type: 'step', entry }));
+    send({ type: 'done', result: result.success
+      ? { success: true, slug: result.slug, industries: result.industries, region: result.region, log: result.log }
+      : { success: false, error: result.error, log: result.log } });
+    res.end();
+  } catch (err) {
+    send({ type: 'done', result: { success: false, error: err.message, log: [] } });
+    res.end();
   }
 });
 

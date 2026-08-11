@@ -1,5 +1,14 @@
 import { buildPricebookSystemPrompt, buildPricebookUserPrompt } from './prompts/pricebook.js';
 
+// Pricebook generation model. Defaults to gpt-4o — a fast, non-reasoning model
+// that's plenty for demo catalogs (~5-10s/call vs ~60s for o3). Override with
+// PRICEBOOK_MODEL (e.g. 'o3' or 'o4-mini') when a catalog needs more "thinking".
+const PRICEBOOK_MODEL = process.env.PRICEBOOK_MODEL || 'gpt-4o';
+// Reasoning models (o-series) allow a huge completion budget; gpt-4o caps output
+// at 16k. One single-industry catalog fits comfortably in 16k.
+const IS_REASONING_MODEL = /^o\d/.test(PRICEBOOK_MODEL);
+const PRICEBOOK_MAX_TOKENS = IS_REASONING_MODEL ? 100000 : 16000;
+
 const VALID_UNITS = ['Sq. Ft.', 'Big Sq.', 'Dollars', 'Linear Feet', 'Each', 'Hours'];
 const VALID_EQUIPMENT_TYPES = [
   'cellulose_blower',
@@ -105,8 +114,12 @@ export async function generatePricebook(params, openai) {
   const workAreaCount = params.workAreaCount || Math.max(3, Math.min(8, Math.round(categoryCount / 2)));
 
   const response = await openai.chat.completions.create({
-    model: 'o3',
-    max_completion_tokens: 100000,
+    model: PRICEBOOK_MODEL,
+    max_completion_tokens: PRICEBOOK_MAX_TOKENS,
+    // Force a pure JSON object so the model can't prepend prose/markdown (the
+    // usual cause of "No JSON object found"). Requires the word "json" in the
+    // prompt — present in buildPricebookUserPrompt ("Return JSON with this shape").
+    response_format: { type: 'json_object' },
     messages: [
       {
         role: 'system',
@@ -115,6 +128,7 @@ export async function generatePricebook(params, openai) {
           params.region,
           params.companyName,
           params.companyAbout,
+          params.catalogOnly,
         ),
       },
       {
@@ -128,17 +142,37 @@ export async function generatePricebook(params, openai) {
           industryContext: params.industryContext,
           templateContext: params.templateContext,
           synthesized: params.synthesized,
+          catalogOnly: params.catalogOnly,
         }),
       },
     ],
   });
 
-  const content = response.choices[0]?.message?.content;
-  if (!content) throw new Error('Empty response from pricebook LLM');
+  const choice = response.choices?.[0];
+  const content = choice?.message?.content;
+  const finish = choice?.finish_reason;
+  // finish_reason 'length' means the model ran out of completion budget mid-answer
+  // (reasoning + output > max_completion_tokens) — surface it clearly so it's not
+  // mistaken for a parse bug.
+  if (!content) {
+    throw new Error(`Empty response from pricebook LLM (finish_reason=${finish || 'unknown'})`);
+  }
 
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('No JSON object found in pricebook response');
-  const parsed = JSON.parse(jsonMatch[0]);
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    // Fallback for any stray wrapping; if even this fails, include diagnostics.
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error(`No JSON object found in pricebook response (finish_reason=${finish || 'unknown'}, preview="${content.slice(0, 200)}")`);
+    }
+    try {
+      parsed = JSON.parse(jsonMatch[0]);
+    } catch (err) {
+      throw new Error(`Pricebook JSON parse failed (finish_reason=${finish || 'unknown'}): ${err.message}`);
+    }
+  }
 
   const result = {
     branchConfig: parsed.branchConfig || null,

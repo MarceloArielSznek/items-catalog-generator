@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { crawlWebsite, crawlDemo, generateSeed, parseXlsx, generateContext } from "../services/seedApi.js";
+import { crawlWebsite, crawlDemo, generateSeed, parseXlsx, generateContext, createMultiIndustryShell } from "../services/seedApi.js";
 import { setLogoPlaceholder } from "../services/orgApi.js";
 import "../styles/SeedGeneratorPage.css";
 
@@ -40,7 +40,8 @@ function slugify(name) {
 
 // ── Step 1: Company Info ─────────────────────────────────────────────────────
 function StepCompanyInfo({ onNext }) {
-  const [mode, setMode] = useState("real"); // "real" | "demo"
+  const navigate = useNavigate();
+  const [mode, setMode] = useState("real"); // "real" | "demo" | "multi"
   const [form, setForm] = useState({
     companyName: "",
     companyWebsite: "",
@@ -48,6 +49,10 @@ function StepCompanyInfo({ onNext }) {
   });
   const [demoUrls, setDemoUrls] = useState([""]);
   const [demoBranchCount, setDemoBranchCount] = useState(1);
+  // Multi-industry: one work area per industry (catalogs filled later).
+  const [multiIndustries, setMultiIndustries] = useState("");
+  const [multiRegion, setMultiRegion] = useState("");
+  const [multiName, setMultiName] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("");
@@ -122,11 +127,38 @@ function StepCompanyInfo({ onNext }) {
     }
   };
 
+  const submitMulti = async () => {
+    const industries = multiIndustries
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (industries.length === 0) return setError("Add at least one industry (one per line)");
+
+    setLoading(true);
+    setStatus("Creating the org shell (identity, branch, config)…");
+    try {
+      const { slug } = await createMultiIndustryShell({
+        industries,
+        region: multiRegion.trim() || undefined,
+        companyName: multiName.trim() || undefined,
+      });
+      // Shell is ready — jump straight to the org detail to fill each work
+      // area's catalog. No review/pricebook steps for the multi-industry flow.
+      navigate(`/orgs/${slug}`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+      setStatus("");
+    }
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     setError("");
     if (mode === "real") submitReal();
-    else submitDemo();
+    else if (mode === "demo") submitDemo();
+    else submitMulti();
   };
 
   return (
@@ -139,6 +171,7 @@ function StepCompanyInfo({ onNext }) {
       <div className="sg-mode-toggle">
         <button type="button" className={mode === "real" ? "sg-mode-btn sg-mode-btn-active" : "sg-mode-btn"} onClick={() => { setMode("real"); setError(""); }}>🏢 Real client</button>
         <button type="button" className={mode === "demo" ? "sg-mode-btn sg-mode-btn-active" : "sg-mode-btn"} onClick={() => { setMode("demo"); setError(""); }}>🎭 Industry / Company demo</button>
+        <button type="button" className={mode === "multi" ? "sg-mode-btn sg-mode-btn-active" : "sg-mode-btn"} onClick={() => { setMode("multi"); setError(""); }}>🧩 Multi-industry</button>
       </div>
 
       <form onSubmit={handleSubmit} className="sg-form">
@@ -205,23 +238,68 @@ function StepCompanyInfo({ onNext }) {
           </div>
         )}
 
-        <label>
-          Timezone
-          <select
-            value={form.timezone}
-            onChange={(e) => setForm({ ...form, timezone: e.target.value })}
-            disabled={loading}
-          >
-            {TIMEZONES.map((tz) => (
-              <option key={tz.value} value={tz.value}>{tz.label}</option>
-            ))}
-          </select>
-        </label>
+        {mode === "multi" && (
+          <div className="sg-section">
+            <h3>Industries</h3>
+            <p className="sg-hint">
+              One work area per industry — enter your industries (one per line, or comma-separated).
+              The AI invents a fake multi-trade company (name, phone, license) and a branch. Each
+              work area's catalog (categories + items) is generated afterward from the org page.
+            </p>
+            <label>
+              Your industries
+              <textarea
+                rows={6}
+                placeholder={"HVAC\nRoofing\nPlumbing\nElectrical\nSolar\nLandscaping"}
+                value={multiIndustries}
+                onChange={(e) => setMultiIndustries(e.target.value)}
+                disabled={loading}
+              />
+            </label>
+            <label>
+              Company name <span className="sg-label-optional">optional — left blank, the AI invents one</span>
+              <input
+                type="text"
+                placeholder="(auto-generated fake name)"
+                value={multiName}
+                onChange={(e) => setMultiName(e.target.value)}
+                disabled={loading}
+              />
+            </label>
+            <label>
+              Region <span className="sg-label-optional">optional — used for pricing + address</span>
+              <input
+                type="text"
+                placeholder="e.g. Austin, TX (random if blank)"
+                value={multiRegion}
+                onChange={(e) => setMultiRegion(e.target.value)}
+                disabled={loading}
+              />
+            </label>
+          </div>
+        )}
+
+        {mode !== "multi" && (
+          <label>
+            Timezone
+            <select
+              value={form.timezone}
+              onChange={(e) => setForm({ ...form, timezone: e.target.value })}
+              disabled={loading}
+            >
+              {TIMEZONES.map((tz) => (
+                <option key={tz.value} value={tz.value}>{tz.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
 
         {error && <p className="sg-error">{error}</p>}
         {status && <p className="sg-status">{status}</p>}
         <button type="submit" disabled={loading} className="sg-btn-primary">
-          {loading ? "Crawling…" : mode === "real" ? "Crawl Website →" : "Build Demo Source →"}
+          {loading
+            ? (mode === "multi" ? "Creating…" : "Crawling…")
+            : mode === "real" ? "Crawl Website →" : mode === "demo" ? "Build Demo Source →" : "Create multi-industry org →"}
         </button>
       </form>
     </div>

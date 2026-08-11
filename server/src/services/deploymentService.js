@@ -69,6 +69,12 @@ const DEFAULT_PAYMENT_TERMS = [
 const MEDIA_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../generated-orgs/media');
 // Org logos live at org-logos/<slug>/<variant>.png (mirrors orgRoutes.ORG_LOGOS_DIR).
 const ORG_LOGOS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../org-logos');
+// User avatars live at generated-orgs/user-avatars/<slug>/<emailKey>.jpg
+// (mirrors orgRoutes.userAvatarPath). Keep the key derivation in sync.
+const USER_AVATARS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../generated-orgs/user-avatars');
+function userKey(email) {
+  return (email || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
+}
 function imageKey(categoryName, itemName) {
   const safe = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
   return `${safe(categoryName)}__${safe(itemName)}`;
@@ -272,6 +278,29 @@ function collectionPlan(label, desired, existing) {
   return { label, create, update, untouched: Math.max(0, existing.length - update.length) };
 }
 
+// Reconcile a fixed provisioning set (onboarding defaults, fleet types, …)
+// against what already exists, keyed by an arbitrary string (slug or composite).
+// Returns the same shape as collectionPlan so the UI renders every row the same
+// way. `update` is always 0 — these are create-or-skip (never patched), so a
+// match counts as untouched.
+function provisionPlan(label, desiredKeys, existingKeys) {
+  const existing = new Set(existingKeys);
+  let create = 0;
+  for (const key of desiredKeys) if (!existing.has(key)) create += 1;
+  return { label, create, update: 0, untouched: desiredKeys.length - create, total: desiredKeys.length, reconciled: true };
+}
+
+// A provisioning set we can't reconcile in the dry run: created during deploy,
+// scoped to resources that don't exist yet (branch configs), or gated by
+// external state (the Supabase auth provider for users). Reported as a plain
+// create-count with reconciled:false so the UI can flag that the deploy still
+// skips any that already exist.
+function unreconciledPlan(label, count) {
+  return { label, create: count, update: 0, untouched: 0, total: count, reconciled: false };
+}
+
+const lower = (s) => String(s || '').trim().toLowerCase();
+
 function flatItems(org) {
   return org.resources.categories.flatMap((category) => category.items);
 }
@@ -305,6 +334,49 @@ export async function preflightOrgDeployment(org, options) {
     collectionPlan('Work areas', org.resources.workAreas, existing.workAreas),
     collectionPlan('Branches', org.branches, existing.branches),
   ];
+
+  // Reconcile the onboarding defaults + fleet/users/media the deploy also
+  // provisions, so the dry run reports create/untouched for every record — not
+  // just the price book. The branch-scoped fleet types are listed against the
+  // first existing branch (none on a fresh org → everything reads as create).
+  const firstBranchId = existing.branches[0]?.id;
+  const [existingLeadStatuses, existingTags, existingLeadSources, existingReasonCodes, existingVehicleTypes, existingEquipmentTypes] = await Promise.all([
+    listAll(options.apiUrl, auth, 'lead-statuses'),
+    listAll(options.apiUrl, auth, 'tags'),
+    listAll(options.apiUrl, auth, 'lead-sources'),
+    listAll(options.apiUrl, auth, 'accounting-reason-codes'),
+    firstBranchId ? listAll(options.apiUrl, auth, 'vehicle-types', { branch: String(firstBranchId) }) : Promise.resolve([]),
+    firstBranchId ? listAll(options.apiUrl, auth, 'equipment-types', { branch: String(firstBranchId) }) : Promise.resolve([]),
+  ]);
+
+  const vehicleTemplates = org.resources.vehicleTemplates || [];
+  const equipmentTypes = org.resources.equipmentTypes || [];
+  const vehicleTypeNames = [...new Set(vehicleTemplates.map((v) => v.type))];
+
+  const additional = [
+    provisionPlan('Lead statuses', DEFAULT_LEAD_STATUSES.map((s) => s.slug), existingLeadStatuses.map((d) => d.slug)),
+    provisionPlan('Tags', DEFAULT_TAGS.map(lower), existingTags.map((d) => lower(d.name))),
+    provisionPlan('Lead sources', DEFAULT_LEAD_SOURCES.map((s) => s.slug), existingLeadSources.map((d) => d.slug)),
+    provisionPlan('Reason codes', DEFAULT_REASON_CODES.map((c) => `${c.reasonType}::${lower(c.name)}`), existingReasonCodes.map((d) => `${d.reasonType}::${lower(d.name)}`)),
+    provisionPlan('Vehicle types', vehicleTypeNames.map(slugify), existingVehicleTypes.map((d) => d.slug)),
+    provisionPlan('Equipment types', equipmentTypes.map(slugify), existingEquipmentTypes.map((d) => d.slug)),
+    unreconciledPlan('Vehicles', vehicleTemplates.length),
+    unreconciledPlan('Users', org.users?.length || 0),
+    unreconciledPlan('Payment terms', DEFAULT_PAYMENT_TERMS.length * (org.branches?.length || 0)),
+    unreconciledPlan('Item images', flatItems(org).filter((item) => item.imageUrl).length),
+  ];
+
+  const collectionTotals = collections.reduce((out, collection) => ({
+    create: out.create + collection.create.length,
+    update: out.update + collection.update.length,
+    untouched: out.untouched + collection.untouched,
+  }), { create: 0, update: 0, untouched: 0 });
+  const totals = additional.reduce((out, row) => ({
+    create: out.create + row.create,
+    update: out.update + row.update,
+    untouched: out.untouched + row.untouched,
+  }), { ...collectionTotals });
+
   return {
     target: {
       id: organization.id,
@@ -321,26 +393,15 @@ export async function preflightOrgDeployment(org, options) {
     },
     confirmation: `${organization.id}:${organization.slug || organization.domain || organization.name}`,
     collections,
-    totals: collections.reduce((out, collection) => ({
-      create: out.create + collection.create.length,
-      update: out.update + collection.update.length,
-      untouched: out.untouched + collection.untouched,
-    }), { create: 0, update: 0, untouched: 0 }),
-    // What the deploy ALSO provisions beyond the price book above (onboarding
-    // defaults + draft fleet/users). Counts of what will be created on a fresh
-    // org; re-deploys reconcile and skip existing.
-    additional: {
-      leadStatuses: DEFAULT_LEAD_STATUSES.length,
-      tags: DEFAULT_TAGS.length,
-      leadSources: DEFAULT_LEAD_SOURCES.length,
-      reasonCodes: DEFAULT_REASON_CODES.length,
-      vehicleTypes: new Set((org.resources.vehicleTemplates || []).map((v) => v.type)).size,
-      vehicles: org.resources.vehicleTemplates?.length || 0,
-      equipmentTypes: org.resources.equipmentTypes?.length || 0,
-      users: org.users?.length || 0,
-      paymentTerms: DEFAULT_PAYMENT_TERMS.length * (org.branches?.length || 0),
-      images: flatItems(org).filter((item) => item.imageUrl).length,
-    },
+    // Grand totals across BOTH the price book collections and the additional
+    // provisioning rows below.
+    totals,
+    collectionTotals,
+    // Onboarding defaults + draft fleet/users/media the deploy also provisions.
+    // Each row carries create/update/untouched like a collection; `reconciled`
+    // is false for rows we can't dry-run (created during deploy or gated by the
+    // external auth provider), where the deploy still skips existing on apply.
+    additional,
   };
 }
 
@@ -447,6 +508,21 @@ async function uploadOrgLogo(baseUrl, auth, fileBuffer, filename) {
     prefix: presign.prefix, filename: presign.filename, mimeType: 'image/png', filesize,
   });
   return registered?.mediaId ?? registered?.id ?? null;
+}
+
+// User-avatar upload — presign → PUT bytes → register against the admin avatar
+// endpoints (/v1/users/:userId/avatar/*). Same 3-step flow as item media.
+async function uploadUserAvatar(baseUrl, auth, userId, fileBuffer, filename) {
+  const filesize = fileBuffer.length;
+  const presign = await apiCall(baseUrl, auth, 'POST', `/users/${userId}/avatar/upload-url`, {
+    mimeType: 'image/jpeg', originalFilename: filename, filesize,
+  });
+  const put = await fetch(presign.uploadUrl, { method: 'PUT', headers: presign.uploadHeaders, body: fileBuffer });
+  if (!put.ok) throw new Error(`avatar PUT failed (${put.status})`);
+  const registered = await apiCall(baseUrl, auth, 'POST', `/users/${userId}/avatar`, {
+    prefix: presign.prefix, filename: presign.filename, mimeType: 'image/jpeg', filesize,
+  });
+  return registered?.mediaId ?? null;
 }
 
 export async function deployOrg(org, options, onStep) {
@@ -591,10 +667,10 @@ export async function deployOrg(org, options, onStep) {
     );
     const itemIds = await upsertNamed(options.apiUrl, auth, 'items', itemsWithCategory, existing.items, (item) => ({
       name: item.name,
-      // Menaia exposes a single item description field (`itemInfo`). We publish
-      // the customer-facing `notes` there; the short technical `itemInfo` line
-      // stays local as internal metadata and a fallback when notes is empty.
-      itemInfo: item.notes || item.itemInfo || '',
+      // Menaia exposes a single item description field (`itemInfo`), which now
+      // holds the full customer-facing description directly. `notes` is a legacy
+      // fallback for orgs generated before the two fields were merged.
+      itemInfo: item.itemInfo || item.notes || '',
       unit: item.unit,
       materialCost: item.materialCost,
       laborHours: item.laborHours,
@@ -867,6 +943,10 @@ export async function deployOrg(org, options, onStep) {
     const roles = await listAll(options.apiUrl, auth, 'roles', {});
     const roleByName = {};
     for (const role of roles) roleByName[String(role.name || '').toLowerCase()] = role.id;
+    // Existing user rows (by email) so about/avatar can be applied on re-deploys
+    // even when the create is skipped because the user already exists in this org.
+    const existingUserAdmins = await listAll(options.apiUrl, auth, 'user-admins');
+    const userIdByEmail = new Map(existingUserAdmins.map((u) => [String(u.email || '').toLowerCase(), u.id]));
     let userCount = 0;
     for (const user of org.users || []) {
       const roleId = roleByName[String(user.role).toLowerCase()];
@@ -880,6 +960,7 @@ export async function deployOrg(org, options, onStep) {
       const password = (user.password || '').length >= 8
         ? user.password
         : (user.password || 'Password').padEnd(8, '0');
+      let userId = userIdByEmail.get(String(user.email).toLowerCase()) || null;
       try {
         const result = await apiCall(options.apiUrl, auth, 'POST', '/user-admins', {
           email: user.email,
@@ -888,6 +969,7 @@ export async function deployOrg(org, options, onStep) {
           roleIds: [roleId],
           branchIds,
         });
+        userId = result.id;
         action('users', 'created', user.email, result.id);
         credentials.push({
           email: user.email,
@@ -898,7 +980,45 @@ export async function deployOrg(org, options, onStep) {
         });
         userCount += 1;
       } catch (err) {
-        step('users', 'running', `skipped ${user.email}: ${err.message}`);
+        step('users', 'running', `skipped create ${user.email}: ${err.message}`);
+        // When the user already exists in the auth provider (409 on a re-deploy),
+        // still record the known credential. The password is deterministic — the
+        // same padded value we created them with — so the Excel export and the
+        // demo-data populate still have valid logins. Only do this for the
+        // "already exists" case; genuine failures (bad role/network) shouldn't
+        // claim a working credential.
+        if (/already exists/i.test(err.message)) {
+          credentials.push({
+            email: user.email,
+            password,
+            role: user.role,
+            name: user.name || '',
+            branches: user.branches || [],
+            existing: true,
+          });
+        }
+      }
+
+      // Profile polish: publish `name` + `about` (UpdateUserAdminSchema accepts
+      // both, optional). This runs for EXISTING users too — `POST /user-admins`
+      // only sets the name on first create, so when a user was deployed before
+      // identities were generated (placeholder "Admin 2"/"Technician 3") and the
+      // draft now holds the real name, this PATCH is what syncs it into Menaia.
+      // Non-fatal: log + continue on failure.
+      //
+      // NOTE: user AVATARS are still not deployed here (the service key gets 401
+      // on the SupabaseJwtGuard'd avatar route); they're populated post-deploy by
+      // demoDataService via a real-user JWT. See memory: project-supabase-seed-path.
+      if (userId && (user.name || user.about)) {
+        const patch = {};
+        if (user.name) patch.name = user.name;
+        if (user.about) patch.about = user.about;
+        try {
+          await apiCall(options.apiUrl, auth, 'PATCH', `/user-admins/${userId}`, patch);
+          action('user-admins', 'updated', `${user.email} profile`, userId);
+        } catch (err) {
+          step('users', 'running', `profile update failed for ${user.email}: ${err.message}`);
+        }
       }
     }
     step('users', 'done', `${userCount} user(s)`);

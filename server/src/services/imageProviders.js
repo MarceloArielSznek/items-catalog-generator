@@ -24,7 +24,7 @@ export async function generateWithOpenAI(prompt, { model = 'gpt-image-1', qualit
     model,
     prompt,
     n: 1,
-    size: '1536x1024',
+    size: '1024x1024',
     quality,
   });
 
@@ -59,7 +59,7 @@ async function generateWithBFL(prompt, { model = 'black-forest-labs/flux-1.1-pro
   const submitRes = await fetch(endpoint, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ prompt, width: 1536, height: 1024, output_format: 'jpeg' }),
+    body: JSON.stringify({ prompt, width: 1024, height: 1024, output_format: 'jpeg' }),
   });
   if (!submitRes.ok) {
     const body = await submitRes.json().catch(() => ({}));
@@ -104,8 +104,9 @@ export async function generateWithReplicate(prompt, { model = 'black-forest-labs
   const output = await replicate.run(model, {
     input: {
       prompt,
-      width: 1536,
+      width: 1024,
       height: 1024,
+      aspect_ratio: '1:1',
       output_format: 'jpg',
       output_quality: 90,
       num_inference_steps: 28,

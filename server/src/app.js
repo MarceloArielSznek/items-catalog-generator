@@ -14,6 +14,7 @@ import payloadRoutes from "./routes/payloadRoutes.js";
 import enrichmentRoutes from "./routes/enrichmentRoutes.js";
 import seedRoutes from "./routes/seedRoutes.js";
 import orgRoutes from "./routes/orgRoutes.js";
+import videoRoutes from "./routes/videoRoutes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -59,6 +60,9 @@ app.use("/pre-generated", express.static(path.resolve(__dirname, "pre-generated"
 
 // ── Org generator (always mounted — this is the product that ships) ──────────
 app.use("/api/seed", seedRoutes);
+// videoRoutes first: its specific paths (e.g. /video-providers) must win before
+// orgRoutes' catch-all GET /:slug treats them as an org slug.
+app.use("/api/orgs", videoRoutes);
 app.use("/api/orgs", orgRoutes);
 
 // ── Legacy item generator (compose / scenes / library / payload / enrich) ────

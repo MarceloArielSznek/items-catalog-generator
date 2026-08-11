@@ -1,4 +1,6 @@
 import * as cheerio from 'cheerio';
+import env from '../../config/env.js';
+import logger from '../../utils/logger.js';
 
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -6,13 +8,41 @@ const USER_AGENT =
 const HIGH_PRIORITY_RE = /location|branch|office|where-we-serve|service-area|our-team|about/i;
 const MEDIUM_PRIORITY_RE = /service|contact|financ|area|career|team|pricing|estimate|quote/i;
 
-async function fetchPage(url) {
+// Jina AI Reader — renders a page server-side and returns its HTML, bypassing
+// simple anti-bot walls (e.g. Cloudflare 403s) that block a plain fetch.
+const JINA_READER_PREFIX = 'https://r.jina.ai/';
+
+async function fetchDirect(url) {
   const res = await fetch(url, {
     headers: { 'User-Agent': USER_AGENT },
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
   return res.text();
+}
+
+// `X-Return-Format: html` makes Jina return the rendered HTML (not markdown), so
+// the existing cheerio extractors (text, links, JSON-LD) keep working unchanged.
+async function fetchViaJina(url) {
+  const headers = { 'User-Agent': USER_AGENT, 'X-Return-Format': 'html' };
+  if (env.JINA_API_KEY) headers.Authorization = `Bearer ${env.JINA_API_KEY}`;
+  const res = await fetch(`${JINA_READER_PREFIX}${url}`, {
+    headers,
+    signal: AbortSignal.timeout(45_000),
+  });
+  if (!res.ok) throw new Error(`Jina reader failed for ${url}: ${res.status}`);
+  return res.text();
+}
+
+// Try a direct fetch first; if it fails (bot wall / 403 / timeout), fall back to
+// Jina Reader so anti-bot-protected sites are still crawlable.
+async function fetchPage(url) {
+  try {
+    return await fetchDirect(url);
+  } catch (err) {
+    logger.warn(`[crawl] direct fetch failed for ${url} (${err.message}); retrying via Jina Reader`);
+    return await fetchViaJina(url);
+  }
 }
 
 function extractLinks(html, baseUrl) {

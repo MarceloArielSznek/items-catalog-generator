@@ -60,7 +60,7 @@ function mergeServices(extracts) {
  * `branchCount` fake branches located in the region.
  * Returns { companyName, domain, about, phone, contractorLicense, branches }.
  */
-async function generateFakeIdentity({ industry, region, services, branchCount = 1 }, openai) {
+export async function generateFakeIdentity({ industry, region, services, branchCount = 1 }, openai) {
   const sample = services.slice(0, 25).join(', ');
   const n = Math.max(1, Math.min(10, branchCount));
   const system =

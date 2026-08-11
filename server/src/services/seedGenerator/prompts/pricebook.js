@@ -1,6 +1,19 @@
-export function buildPricebookSystemPrompt(industry, region, companyName, companyAbout) {
+export function buildPricebookSystemPrompt(industry, region, companyName, companyAbout, catalogOnly = false) {
   const companyCtx = companyName
     ? `\nYou are generating this pricebook specifically for: ${companyName}${companyAbout ? ` — "${companyAbout.slice(0, 300)}"` : ''}.`
+    : '';
+
+  // Catalog-only override — appended at the very end so it wins over the rules
+  // above. Used when the org already has branch config/proposal content and only
+  // needs the item catalog (much smaller output → much faster).
+  const catalogOnlyOverride = catalogOnly
+    ? `\n\n═══════════════════════════════════════════════
+CATALOG-ONLY MODE — OVERRIDES EVERYTHING ABOVE
+═══════════════════════════════════════════════
+You are generating ONLY the item catalog: work areas, categories, items, factors, and additional costs.
+- Do NOT generate branchConfig, proposalContent, subcontractedItems, vehicleTemplates, or equipmentTypes. Omit them entirely.
+- ITEM INFO OVERRIDE: write each itemInfo as 1-2 concise customer-facing sentences (~20-40 words). Clear and specific, NOT a full paragraph. Ignore the "3-5 sentences" rule above.
+- Keep all UNIT, NAMING, and PRICING rules.`
     : '';
 
   return `You are a construction/trades industry pricing analyst specializing in ${industry} services in the ${region} market.${companyCtx}
@@ -57,23 +70,15 @@ NAMING RULES
 - BAD:  "Insulation Installation", "Duct Repair (Flex or Metal)", "Cleaning Service"
 
 ═══════════════════════════════════════════════
-ITEM INFO RULES — HARD 15-WORD MAX
+ITEM INFO RULES — 3-5 SENTENCES, CUSTOMER-FACING
 ═══════════════════════════════════════════════
-- itemInfo = one technical spec line, max 15 words, written like a contractor invoice line.
-- GOOD: "Machine-blown cellulose to R-49; 14-inch settled depth, baffles included."
-- GOOD: "6-inch R-6 flex duct; mastic-sealed both ends, new straps."
-- BAD:  "Duct repair involves fixing leaks and damages in flexible and metal ductwork to ensure efficient airflow." ← PARAGRAPH, REJECTED
-- BAD:  "Professional grade material" ← TOO GENERIC, REJECTED
-- BAD:  "This service improves indoor air quality by..." ← MARKETING COPY, REJECTED
-
-═══════════════════════════════════════════════
-ITEM NOTES RULES — 1-2 SENTENCES, CUSTOMER-FACING
-═══════════════════════════════════════════════
-- notes = customer-facing description: what the service includes and when/why it's needed. Max 40 words.
-- Written for a homeowner reading a proposal, not a technician.
-- GOOD: "Adds blown cellulose to bring your attic to R-49 code. Includes ventilation baffles at eave edges to maintain airflow and prevent moisture buildup."
-- GOOD: "Replaces damaged or undersized flex duct run with new R-6 insulated flex. Mastic-sealed connections reduce air loss and improve system efficiency."
+- itemInfo = the single customer-facing description that appears on the proposal line item AND is posted to the API. Write 3-5 full sentences (~45-90 words).
+- Cover three things, in this order: (1) what the service includes / what gets done, (2) the materials, grade, or method used, (3) why it matters to the homeowner (comfort, energy savings, code, moisture/health, longevity).
+- Written for a homeowner reading a proposal, not a technician. Warm, confident, specific — no marketing fluff, no internal pricing.
+- GOOD: "We machine-blow fresh cellulose insulation across your attic floor to reach a full R-49 thermal value, the depth recommended for this climate. The crew installs rigid ventilation baffles at every eave so airflow to the soffits is preserved and the new insulation can't choke off your roof ventilation. Bringing the attic up to R-49 noticeably reduces heat loss in winter and heat gain in summer, which lowers your heating and cooling bills and helps prevent ice dams and moisture buildup. All work is completed in a single visit with full cleanup afterward."
+- GOOD: "This replaces a damaged or undersized flexible duct run with new R-6 insulated flex duct sized correctly for the system. Both ends are mechanically fastened and fully sealed with mastic to eliminate air leaks at the connections. Properly sealed, correctly sized ducting restores airflow to the affected rooms, improves overall system efficiency, and reduces the dust and uneven temperatures caused by leaking ducts."
 - BAD:  "This is a service" ← TOO GENERIC
+- BAD:  "Machine-blown cellulose to R-49; baffles included." ← TOO SHORT / INVOICE FRAGMENT, REJECTED
 - BAD:  "Material cost: $0.52/sqft" ← INTERNAL DATA, NOT CUSTOMER-FACING
 
 ═══════════════════════════════════════════════
@@ -110,16 +115,25 @@ VEHICLE RULES:
 ═══════════════════════════════════════════════
 PROPOSAL CONTENT RULES
 ═══════════════════════════════════════════════
-Generate professional, company-specific text for the proposalContent block. These appear on every customer proposal for a ${industry} contractor in ${region}.
+Generate professional, company-specific text for the proposalContent block. These appear on every customer proposal for a ${industry} contractor in ${region}. Write it so it reads like the polished proposal of an established, reputable contractor — specific, confident, and legitimate.
+
+PLACEHOLDER RULES (CRITICAL — the proposal system only interpolates these exact tokens; any other token will render as literal text):
+- {{ company_name }} — the contractor's company name
+- {{ client_first_name }} — the customer's first name
+- {{ inspector_name }} — the rep/inspector who prepared the proposal
+- {{ inspector_number }} — that rep's phone number
+- {{ date }} — the proposal date
+Use the tokens EXACTLY as written above, including the spaces inside the braces. NEVER invent other placeholders (no {{companyName}}, no {{proposalLink}}, etc.).
 
 - disclaimer: 1-2 sentences covering price/schedule estimates and site-condition changes. Industry-specific.
-- paymentTerms: 1-2 sentences on deposit and balance due. Use realistic % for this industry.
-- insuranceClaims: 1-2 sentences on customer's responsibility when work involves an insurance claim.
-- termsAndConditions: 2-3 sentences covering scope authorization, warranty availability, and change orders.
-- defaultProposalEmailSubject: Subject line for the email sent with a proposal. Include {{companyName}} placeholder. Should motivate the customer to open it.
-- defaultProposalEmailBody: 3-5 sentence email body sent with a proposal link. Warm but professional. Include {{clientFirstName}}, {{companyName}}, {{proposalLink}} placeholders. End with a clear call-to-action to review and approve.
+- paymentTerms: 2-4 sentences. Cover the deposit required to schedule (realistic % for this industry), how progress/completed-work payments are handled, and when the final balance is due (e.g. prior to crew departure on the final day). Mention how any additional/out-of-scope services are billed.
+- insuranceClaims: 2-3 sentences on the customer's responsibility when the work is part of an insurance claim, including that the customer remains responsible for full payment if a claim is denied, and the window to pay after denial.
+- termsAndConditions: a moderate block of 3-5 short paragraphs (NOT a full legal contract). Cover: (1) client authorization to perform the scope and responsibility for payment, (2) that the scope is limited to what is listed and timelines are good-faith estimates, (3) workmanship warranty availability and that remedies are limited to re-performing the work, (4) that any change to scope requires a written change order, (5) governing law / dispute resolution for ${region} and the customer's 3-business-day right to cancel. Industry- and region-aware, plain English.
+- defaultProposalEmailSubject: Subject line for the email sent with a proposal. Use the {{ company_name }} and optionally {{ date }} placeholders, e.g. "Proposal from {{ company_name }} - {{ date }}".
+- defaultProposalEmailBody: a warm, professional 4-6 line email body. Open with "Hi {{ client_first_name }}," then thank them for their interest, note that the attached quote and contract were prepared from the details they provided, and invite questions or adjustments. Close with "Best regards," followed by {{ inspector_name }} and {{ inspector_number }} on their own lines. Do NOT include a proposal link.
+- about: a warm, credible 2-paragraph company blurb in the first person plural ("we"). First paragraph: thank the customer for choosing {COMPANY} and convey passion for the work, the team, and the client experience. Second paragraph: set expectations around transparency, process, and timelines. Use the literal company name (not a placeholder) when known.
 
-Return ONLY valid JSON, no markdown or explanation.`;
+Return ONLY valid JSON, no markdown or explanation.${catalogOnlyOverride}`;
 }
 
 export function buildPricebookUserPrompt(params) {
@@ -139,6 +153,37 @@ export function buildPricebookUserPrompt(params) {
   const categoryCount = params.categoryCount || Math.max(4, Math.round(totalItems / 5));
   const itemsPerCategory = Math.round(totalItems / categoryCount);
   const workAreaCount = params.workAreaCount || Math.max(3, Math.min(8, Math.round(categoryCount / 2)));
+
+  // Catalog-only: request just the item catalog (categories/items/factors/costs)
+  // with short descriptions. ~half the output → much faster. Used when the org
+  // already has branch config + proposal content (per-work-area generation).
+  if (params.catalogOnly) {
+    return `${intro}
+${params.services.map((s) => `- ${s}`).join('\n')}${templateSection}${industryContextSection}
+
+Generate ONLY the item catalog (NO branchConfig, proposalContent, vehicles, or equipment).
+
+STRUCTURE:
+- Exactly ${categoryCount} categories (specific service groupings for this industry).
+- Exactly ${itemsPerCategory} items per category = ~${totalItems} total items. Every category must have exactly ${itemsPerCategory} items.
+- 6-10 labor/access factors (always include "Standard" at 1.0, alwaysEnabled true).
+- 4-8 additional costs (permits, disposal, equipment rental, etc.).
+- ${workAreaCount} work area(s) grouping the categories.
+
+QUALITY CHECK — before returning, verify every item:
+✓ Name is specific (grade, size, method, or brand)
+✓ unit correctly reflects how the work is sold (Sq. Ft. / Linear Feet / Each / Hours / Big Sq.)
+✓ itemInfo is 1-2 concise customer-facing sentences (~20-40 words) — NOT a paragraph, NOT an invoice fragment
+
+Return JSON with this exact shape:
+{
+  "workAreas": [{ "name": "string", "categories": ["string"], "factorNames": ["exact factor name"] }],
+  "categories": [{ "name": "string", "title": "string", "factorNames": ["exact factor name"], "items": [{ "name": "string", "itemInfo": "string (1-2 sentences)", "unit": "Sq. Ft.|Linear Feet|Each|Hours|Big Sq.", "materialCost": number, "laborHours": number, "multiplierOverride": null, "requiresInfo": boolean, "factorNames": ["exact factor name"], "additionalCostNames": ["exact additional cost name"] }] }],
+  "factors": [{ "name": "string", "factor": number, "appliesTo": "Material Cost|Labor Cost", "alwaysEnabled": boolean }],
+  "additionalCosts": [{ "name": "string", "cost": number, "appliesTo": "Material Cost|Labor Cost" }]
+}
+Return ONLY valid JSON, no markdown or explanation.`;
+  }
 
   return `${intro}
 ${params.services.map((s) => `- ${s}`).join('\n')}${templateSection}${industryContextSection}
@@ -163,9 +208,8 @@ UNIT CHECK — before returning, verify:
 
 QUALITY CHECK — before returning, verify every item:
 ✓ Name is specific (includes grade, R-value, size, method, or brand)
-✓ itemInfo is ≤15 words and reads like a contractor invoice line
-✓ notes is 1-2 customer-facing sentences explaining what the service does and why it matters
-✗ Reject any itemInfo that is a sentence fragment explaining what the service does
+✓ itemInfo is 3-5 customer-facing sentences (~45-90 words) covering what's included, the material/method, and why it matters
+✗ Reject any itemInfo shorter than 3 sentences or written as an invoice fragment
 ✗ Reject any name that is a generic category label
 
 Return JSON with this exact shape:
@@ -191,6 +235,7 @@ Return JSON with this exact shape:
     "leaderboardColorPercentage": number
   },
   "proposalContent": {
+    "about": "string",
     "disclaimer": "string",
     "paymentTerms": "string",
     "insuranceClaims": "string",
@@ -199,10 +244,10 @@ Return JSON with this exact shape:
     "defaultProposalEmailBody": "string"
   },
   "workAreas": [{ "name": "string", "categories": ["string"], "factorNames": ["exact factor name"] }],
-  "categories": [{ "name": "string", "title": "string", "factorNames": ["exact factor name"], "items": [{ "name": "string", "itemInfo": "string", "notes": "string", "unit": "Sq. Ft.|Linear Feet|Each|Hours|Big Sq.", "materialCost": number, "laborHours": number, "multiplierOverride": null, "requiresInfo": boolean, "factorNames": ["exact factor name"], "additionalCostNames": ["exact additional cost name"] }] }],
+  "categories": [{ "name": "string", "title": "string", "factorNames": ["exact factor name"], "items": [{ "name": "string", "itemInfo": "string", "unit": "Sq. Ft.|Linear Feet|Each|Hours|Big Sq.", "materialCost": number, "laborHours": number, "multiplierOverride": null, "requiresInfo": boolean, "factorNames": ["exact factor name"], "additionalCostNames": ["exact additional cost name"] }] }],
   "factors": [{ "name": "string", "factor": number, "appliesTo": "Material Cost|Labor Cost", "alwaysEnabled": boolean }],
   "additionalCosts": [{ "name": "string", "cost": number, "appliesTo": "Material Cost|Labor Cost" }],
-  "subcontractedItems": [{ "name": "string", "itemInfo": "string", "notes": "string", "unit": "Sq. Ft.|Linear Feet|Each|Hours", "materialCost": number }],
+  "subcontractedItems": [{ "name": "string", "itemInfo": "string", "unit": "Sq. Ft.|Linear Feet|Each|Hours", "materialCost": number }],
   "vehicleTemplates": [{ "type": "truck|van|trailer", "make": "string", "model": "string", "year": number }],
   "equipmentTypes": ["string"]
 }`;

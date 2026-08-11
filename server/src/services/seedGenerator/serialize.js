@@ -96,18 +96,24 @@ const BRANCH_CONFIG_DEFAULTS = {
   leaderboardColorPercentage: 20,
 };
 
+// NOTE on placeholders: the Menaia proposal system only interpolates the exact
+// tokens {{ company_name }}, {{ client_first_name }}, {{ inspector_name }},
+// {{ inspector_number }}, {{ date }} (note the spaces inside the braces). Any
+// other token renders literally, so these defaults use only those.
 const PROPOSAL_CONTENT_DEFAULTS = {
+  about:
+    'Thank you for choosing us to complete the scope of work outlined in the proposal below. We are passionate about our work, our team, and, above all, delivering the best possible experience for every client.\n\nTo make sure we exceed your expectations, we believe in full transparency — including how we operate, what to expect throughout the process, and typical timelines. Our process and what you can expect are outlined below.',
   disclaimer:
-    'All prices and schedules are estimates and subject to change based on site conditions. Any unforeseen conditions discovered during work may require a change order.',
+    'All prices and schedules are estimates and subject to change based on site conditions. Any unforeseen conditions discovered during work may require a written change order.',
   paymentTerms:
-    'A deposit is required to reserve your project. The remaining balance is due upon completion unless otherwise agreed in writing.',
+    'A deposit is required to reserve your project and submit it for scheduling. Subsequent payments are due for completed work as specified in the proposal, with the remaining balance collected prior to crew departure on the final day of work. Any additional services added outside the original scope are billed separately as they are completed.',
   insuranceClaims:
-    'If this work is part of an insurance claim, the customer is responsible for communicating with their carrier and providing claim documentation as needed.',
+    'If this work is performed as part of an insurance claim, it remains the client\'s responsibility to ensure full payment. If a claim is denied for any reason and the work has been started or completed, the client is obligated to pay the full amount within seven (7) days of written notice of the denial or of completion, whichever occurs first.',
   termsAndConditions:
-    'By approving this proposal, you authorize the company to perform the described scope of work. Any changes to the agreed scope require a written change order. Warranty details and full terms are available upon request.',
-  defaultProposalEmailSubject: 'Your Proposal from {{companyName}} — Ready to Review',
+    'By approving this proposal, you authorize the company to enter the job site and perform the services identified in the scope of work, and you accept responsibility for full payment as set forth above.\n\nThe company will undertake commercially reasonable efforts to complete the scope of work in accordance with industry standards. Services are limited to those identified in this proposal, and any stated completion timeline is a good-faith estimate based on the conditions known at the time the proposal was prepared.\n\nWhere a warranty is indicated, the company warrants that the work will be performed in a good and workmanlike manner; warranty remedies are limited to re-performing the affected work or refunding the amount paid for that work. Any change to the agreed scope requires a written change order.\n\nThis agreement is governed by the laws of the state in which the work is performed. The client may cancel this transaction without penalty prior to midnight of the third (3rd) business day after the date of this agreement.',
+  defaultProposalEmailSubject: 'Proposal from {{ company_name }} - {{ date }}',
   defaultProposalEmailBody:
-    'Hi {{clientFirstName}},\n\nThank you for the opportunity to work with you. Your proposal is ready for review.\n\nClick below to view your proposal, ask questions, and approve when you\'re ready:\n{{proposalLink}}\n\nIf you have any questions, feel free to reply to this email or give us a call. We look forward to working with you.\n\nBest regards,\n{{companyName}}',
+    'Hi {{ client_first_name }},\n\nThank you for your interest in working with us. Attached is the proposed quote and contract, prepared based on the project details you\'ve provided.\n\nPlease feel free to reach out if you have any questions, would like to make adjustments, or need clarification on any part of the proposal.\n\nBest regards,\n{{ inspector_name }}\n{{ inspector_number }}',
 };
 
 function buildBranches(input, extracted, pricebookBranchConfig, proposalContent) {
@@ -118,11 +124,22 @@ function buildBranches(input, extracted, pricebookBranchConfig, proposalContent)
   // Merge: AI-generated values override defaults; extracted text fields come from crawl
   const cfg = { ...BRANCH_CONFIG_DEFAULTS, ...(pricebookBranchConfig || {}) };
 
-  // AI-generated proposal content overrides hardcoded defaults
-  const pc = { ...PROPOSAL_CONTENT_DEFAULTS, ...(proposalContent || {}) };
-  // Inject company name into terms and conditions if it's still the generic version
-  if (pc.termsAndConditions === PROPOSAL_CONTENT_DEFAULTS.termsAndConditions) {
-    pc.termsAndConditions = `By approving this proposal, you authorize ${input.companyName} to perform the described scope of work. Any changes to the agreed scope require a written change order. Warranty details and full terms are available upon request.`;
+  // AI-generated proposal content overrides hardcoded defaults. Drop empty
+  // string values so a blank AI field falls back to the default rather than
+  // publishing an empty proposal section.
+  const cleanedPc = Object.fromEntries(
+    Object.entries(proposalContent || {}).filter(([, v]) => String(v ?? '').trim() !== ''),
+  );
+  const pc = { ...PROPOSAL_CONTENT_DEFAULTS, ...cleanedPc };
+  // When a section is still the generic default, swap "the company" for the real
+  // company name so the boilerplate reads as this contractor's own.
+  if (input.companyName) {
+    if (pc.termsAndConditions === PROPOSAL_CONTENT_DEFAULTS.termsAndConditions) {
+      pc.termsAndConditions = pc.termsAndConditions.replace('authorize the company to', `authorize ${input.companyName} to`);
+    }
+    if (pc.about === PROPOSAL_CONTENT_DEFAULTS.about) {
+      pc.about = pc.about.replace('Thank you for choosing us', `Thank you for choosing ${input.companyName}`);
+    }
   }
 
   return input.branches.map((b) => ({
@@ -130,8 +147,11 @@ function buildBranches(input, extracted, pricebookBranchConfig, proposalContent)
     address: b.address,
     phone: extracted.phone || '',
     timezone: input.timezone,
+    // Menaia's `about` is the proposal intro/welcome block (not a website-style
+    // company blurb), so the AI/boilerplate version fits better than a raw crawl;
+    // fall back to the crawled about only when no proposal `about` was produced.
     contractorLicense: extracted.contractorLicense || '',
-    about: extracted.about || '',
+    about: pc.about || extracted.about || '',
     aboutVideoUrl: '',
     financePartnerUrl: input.companyWebsite || '',
     disclaimer: pc.disclaimer,
@@ -172,8 +192,9 @@ function buildCategories(pricebook) {
     factorNames: cat.factorNames || [],
     items: cat.items.map((item) => ({
       name: item.name,
-      itemInfo: item.itemInfo || '',
-      notes: item.notes || '',
+      // Single description field: the rich customer-facing text. `notes` is the
+      // legacy field name; prefer it if an older pricebook still supplies it.
+      itemInfo: item.itemInfo || item.notes || '',
       unit: item.unit,
       materialCost: item.materialCost,
       laborHours: item.laborHours,
@@ -194,8 +215,7 @@ function buildCategories(pricebook) {
       factorNames: [],
       items: pricebook.subcontractedItems.map((item) => ({
         name: item.name,
-        itemInfo: item.itemInfo || '',
-        notes: item.notes || '',
+        itemInfo: item.itemInfo || item.notes || '',
         unit: item.unit,
         materialCost: item.materialCost,
         laborHours: 0,
@@ -211,6 +231,28 @@ function buildCategories(pricebook) {
   }
 
   return cats;
+}
+
+// The LLM occasionally tags items/categories/work-areas with a factor or
+// additional-cost name it never actually defined (or a renamed one), which makes
+// the strict deploy validation throw. Drop any reference that doesn't resolve to
+// a defined resource so the org is always internally consistent.
+function pruneDanglingReferences(categories, workAreas, factors, additionalCosts) {
+  const factorNames = new Set((factors || []).map((f) => f.name));
+  const costNames = new Set((additionalCosts || []).map((c) => c.name));
+  const categoryNames = new Set(categories.map((c) => c.name));
+
+  for (const cat of categories) {
+    cat.factorNames = (cat.factorNames || []).filter((n) => factorNames.has(n));
+    for (const item of cat.items) {
+      item.factorNames = (item.factorNames || []).filter((n) => factorNames.has(n));
+      item.additionalCostNames = (item.additionalCostNames || []).filter((n) => costNames.has(n));
+    }
+  }
+  for (const wa of workAreas) {
+    wa.categories = (wa.categories || []).filter((n) => categoryNames.has(n));
+    wa.factorNames = (wa.factorNames || []).filter((n) => factorNames.has(n));
+  }
 }
 
 function buildWorkAreas(pricebook) {
@@ -234,6 +276,7 @@ export function serializeOrganization(input, extracted, pricebook) {
 
   const categories = buildCategories(pricebook);
   const workAreas = buildWorkAreas(pricebook);
+  pruneDanglingReferences(categories, workAreas, pricebook.factors, pricebook.additionalCosts);
 
   return {
     slug: input.slug,

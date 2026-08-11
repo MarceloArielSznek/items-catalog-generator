@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { getOrg, deleteOrg, deployOrg, planOrgDeployment, generateOrgLogo, setLogoPlaceholder, cloneToReal } from "../services/orgApi.js";
-import { getMenaiaSettings, hasMenaiaSettings } from "../services/menaiaSettings.js";
+import { getOrg, deleteOrg, deployOrg, planOrgDeployment, seedDemoData, planDemoData, generateOrgLogo, setLogoPlaceholder, cloneToReal, addWorkArea, generateWorkAreaCatalog, getVideoProviders, listOrgVideos, generateOrgVideo, previewOrgVideoPrompt, deleteOrgVideo } from "../services/orgApi.js";
+import { getMenaiaSettings, hasMenaiaSettings, hasDemoDataSettings } from "../services/menaiaSettings.js";
 
 function StatBadge({ label, value }) {
   return (
@@ -46,6 +46,138 @@ function BranchSection({ branches }) {
           )}
         </div>
       ))}
+    </SectionCard>
+  );
+}
+
+const WAB_LOG_ICONS = { running: "⟳", done: "✓", failed: "✗" };
+
+// Multi-industry work-area builder: add industries and generate each work area's
+// catalog (categories + items) one at a time. Shown only for multi-industry orgs.
+function WorkAreaBuilderSection({ org, onChanged }) {
+  const workAreas = org.resources.workAreas || [];
+  const [newIndustry, setNewIndustry] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState("");
+  const [genState, setGenState] = useState({});          // { [name]: { running, log, result } }
+  const [industryOverride, setIndustryOverride] = useState({});
+  const [cats, setCats] = useState(7);
+  const [items, setItems] = useState(6);
+
+  const anyRunning = Object.values(genState).some((g) => g?.running);
+
+  async function handleAdd() {
+    const name = newIndustry.trim();
+    if (!name) return;
+    setAdding(true); setAddError("");
+    try { await addWorkArea(org.slug, name); setNewIndustry(""); onChanged?.(); }
+    catch (e) { setAddError(e.message); }
+    finally { setAdding(false); }
+  }
+
+  async function handleGenerate(wa) {
+    setGenState((s) => ({ ...s, [wa.name]: { running: true, log: [], result: null } }));
+    try {
+      const res = await generateWorkAreaCatalog(org.slug, {
+        workArea: wa.name,
+        industry: (industryOverride[wa.name] || wa.name).trim(),
+        categoriesPerIndustry: Number(cats) || 7,
+        itemsPerCategory: Number(items) || 6,
+      }, {
+        onStep: (entry) => setGenState((s) => ({
+          ...s, [wa.name]: { running: true, log: [...(s[wa.name]?.log || []), entry], result: null },
+        })),
+      });
+      setGenState((s) => ({
+        ...s,
+        [wa.name]: {
+          running: false,
+          log: res.log || s[wa.name]?.log || [],
+          result: res.success
+            ? { success: true, addedCats: res.addedCats, addedItems: res.addedItems }
+            : { success: false, error: res.error || "Generation failed" },
+        },
+      }));
+      if (res.success) onChanged?.();
+    } catch (e) {
+      setGenState((s) => ({ ...s, [wa.name]: { running: false, log: s[wa.name]?.log || [], result: { success: false, error: e.message } } }));
+    }
+  }
+
+  return (
+    <SectionCard title={`Industries / Work Areas (${workAreas.length})`}>
+      <div className="wab">
+        <div className="deploy-panel__note">
+          One work area per industry. Generate each work area's catalog (categories + items) —
+          you can override the industry the AI generates for. Images come later via the bulk flow.
+        </div>
+        <div className="deploy-demo__controls">
+          <label className="form-label deploy-demo__field">
+            Categories
+            <input type="number" min="3" max="12" className="form-input deploy-demo__num" value={cats} onChange={(e) => setCats(e.target.value)} disabled={anyRunning} />
+          </label>
+          <label className="form-label deploy-demo__field">
+            Items / category
+            <input type="number" min="3" max="12" className="form-input deploy-demo__num" value={items} onChange={(e) => setItems(e.target.value)} disabled={anyRunning} />
+          </label>
+        </div>
+
+        {workAreas.map((wa) => {
+          const g = genState[wa.name] || {};
+          const count = wa.categories.length;
+          return (
+            <div key={wa.name} className="wab__row">
+              <div className="wab__head">
+                <strong>{wa.name}</strong>
+                <span className="wab__count">{count} categor{count === 1 ? "y" : "ies"}</span>
+              </div>
+              <div className="wab__actions">
+                <input
+                  className="form-input"
+                  placeholder={`Industry (default: ${wa.name})`}
+                  value={industryOverride[wa.name] ?? ""}
+                  onChange={(e) => setIndustryOverride((s) => ({ ...s, [wa.name]: e.target.value }))}
+                  disabled={g.running}
+                />
+                <button className="btn btn--deploy" onClick={() => handleGenerate(wa)} disabled={g.running || anyRunning}>
+                  {g.running ? "Generating…" : count > 0 ? "Add more" : "Generate catalog"}
+                </button>
+              </div>
+              {g.log?.length > 0 && (
+                <div className="deploy-log">
+                  {g.log.map((e, i) => (
+                    <div key={i} className={`deploy-log__entry deploy-log__entry--${e.status}`}>
+                      <span className="deploy-log__icon">{WAB_LOG_ICONS[e.status] || "•"}</span>
+                      <span className="deploy-log__name">{e.name}</span>
+                      {e.detail && <span className="deploy-log__detail">{e.detail}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {g.result && (
+                <div className={`deploy-result ${g.result.success ? "deploy-result--success" : "deploy-result--error"}`}>
+                  {g.result.success ? `✓ +${g.result.addedCats} categories, +${g.result.addedItems} items` : `✗ ${g.result.error}`}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        <div className="wab__add">
+          <input
+            className="form-input"
+            placeholder="Add an industry (new work area)…"
+            value={newIndustry}
+            onChange={(e) => setNewIndustry(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
+            disabled={adding}
+          />
+          <button className="btn btn--secondary" onClick={handleAdd} disabled={adding || !newIndustry.trim()}>
+            {adding ? "Adding…" : "+ Add industry"}
+          </button>
+        </div>
+        {addError && <div className="deploy-result deploy-result--error">{addError}</div>}
+      </div>
     </SectionCard>
   );
 }
@@ -352,6 +484,276 @@ function ImagePreviewModal({ item, onClose }) {
   );
 }
 
+const PROVIDER_LABEL = { openai: "Sora (OpenAI)", gemini: "Veo (Google)" };
+
+// Rough per-second pricing (USD) for the cost estimate — approximate, provider
+// pricing changes over time.
+const PRICE_PER_SEC = {
+  "sora-2": 0.10,
+  "sora-2-pro": 0.30,
+  "veo-3.1-generate-preview": 0.40,
+  "veo-3.1-fast-generate-preview": 0.15,
+  "veo-3.1-lite-generate-preview": 0.10,
+};
+
+function VideoSection({ org }) {
+  const slug = org.slug;
+  const [providers, setProviders] = useState(null);
+  const [videos, setVideos] = useState([]);
+  const [provider, setProvider] = useState("openai");
+  const [model, setModel] = useState("");
+  const [kind, setKind] = useState("company");
+  const [orientation, setOrientation] = useState("landscape");
+  const [seconds, setSeconds] = useState("8");   // Sora clip length
+  const [segments, setSegments] = useState(1);   // Veo clips to stitch (8s each)
+  const [silent, setSilent] = useState(true);
+  const [pingPong, setPingPong] = useState(false); // seamless loop for landing bg
+  const [extra, setExtra] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState(null);   // { message, progress }
+  const [livePrompt, setLivePrompt] = useState("");
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    getVideoProviders().then((data) => {
+      setProviders(data);
+      // Default to the first configured provider.
+      const firstAvail = ["openai", "gemini"].find((p) => data[p]?.available) || "openai";
+      setProvider(firstAvail);
+      setModel(data[firstAvail]?.models?.[0]?.id || "");
+    }).catch((e) => setError(e.message));
+    listOrgVideos(slug).then(setVideos).catch(() => {});
+  }, [slug]);
+
+  // Keep the model valid whenever the provider changes.
+  useEffect(() => {
+    if (!providers) return;
+    const models = providers[provider]?.models || [];
+    if (!models.find((m) => m.id === model)) setModel(models[0]?.id || "");
+  }, [provider, providers]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const anyConfigured = providers && (providers.openai?.available || providers.gemini?.available);
+
+  // Total seconds + cost estimate for the current selection.
+  const isVeo = provider === "gemini";
+  const totalSeconds = isVeo ? segments * 8 : Number(seconds);   // billed length
+  const finalSeconds = totalSeconds * (pingPong ? 2 : 1);        // playback length
+  const perSec = PRICE_PER_SEC[model] ?? 0.15;
+  const costEstimate = (perSec * totalSeconds).toFixed(2);
+
+  async function handleGenerate() {
+    setBusy(true);
+    setError(null);
+    setLivePrompt("");
+    setStatus({ message: "Starting…", progress: 0 });
+    try {
+      const video = await generateOrgVideo(slug, { provider, model, kind, orientation, seconds, segments: isVeo ? segments : 1, silent, loop: pingPong ? "boomerang" : "none", extra }, {
+        onEvent: (data) => {
+          if (data.type === "status") setStatus({ message: data.message, progress: 0 });
+          else if (data.type === "prompt") setLivePrompt(data.prompt);
+          else if (data.type === "progress") {
+            const secs = Math.round((data.elapsedMs || 0) / 1000);
+            setStatus({ message: `Rendering… ${data.progress || 0}% (${secs}s elapsed)`, progress: data.progress || 0 });
+          }
+        },
+      });
+      setVideos((prev) => [video, ...prev]);
+      setStatus(null);
+    } catch (e) {
+      setError(e.message);
+      setStatus(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handlePreview() {
+    setBusy(true);
+    setError(null);
+    setStatus({ message: "Writing the prompt from org context…", progress: 0 });
+    try {
+      const prompts = await previewOrgVideoPrompt(slug, { provider, model, kind, orientation, seconds, segments: isVeo ? segments : 1, extra });
+      setLivePrompt(prompts.join("\n\n— — —\n\n"));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setStatus(null);
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete(id) {
+    if (!confirm("Delete this video?")) return;
+    try {
+      const next = await deleteOrgVideo(slug, id);
+      setVideos(next);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  const models = (providers && providers[provider]?.models) || [];
+
+  return (
+    <SectionCard title="Preview Videos">
+      <div className="video-section">
+        <p className="video-section__intro">
+          Generate a short promo/preview clip that presents <strong>{org.name}</strong> or the{" "}
+          <strong>{org.industry || "industry"}</strong>. The prompt is written automatically from this org's
+          context and visual style. Rendering takes a few minutes and is billed per video by the provider.
+        </p>
+
+        {providers && !anyConfigured && (
+          <div className="video-warn">
+            No video provider is configured. Add an <code>OPENAI_API_KEY</code> (Sora) or{" "}
+            <code>GEMINI_API_KEY</code> (Veo) to the server env.
+          </div>
+        )}
+
+        {anyConfigured && (
+          <div className="video-form">
+            <div className="video-form__row">
+              <label className="video-field">
+                <span className="video-field__label">Provider</span>
+                <select value={provider} onChange={(e) => setProvider(e.target.value)} disabled={busy}>
+                  {["openai", "gemini"].map((p) => (
+                    <option key={p} value={p} disabled={!providers[p]?.available}>
+                      {PROVIDER_LABEL[p]}{providers[p]?.available ? "" : " — no key"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="video-field">
+                <span className="video-field__label">Model</span>
+                <select value={model} onChange={(e) => setModel(e.target.value)} disabled={busy}>
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>{m.label} — {m.note}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="video-form__row">
+              <label className="video-field">
+                <span className="video-field__label">Subject</span>
+                <select value={kind} onChange={(e) => setKind(e.target.value)} disabled={busy}>
+                  <option value="company">This company</option>
+                  <option value="industry">The industry</option>
+                </select>
+              </label>
+
+              <label className="video-field">
+                <span className="video-field__label">Orientation</span>
+                <select value={orientation} onChange={(e) => setOrientation(e.target.value)} disabled={busy}>
+                  <option value="landscape">Landscape 16:9</option>
+                  <option value="portrait">Portrait 9:16</option>
+                </select>
+              </label>
+
+              {provider === "openai" ? (
+                <label className="video-field">
+                  <span className="video-field__label">Length</span>
+                  <select value={seconds} onChange={(e) => setSeconds(e.target.value)} disabled={busy}>
+                    <option value="4">4s</option>
+                    <option value="8">8s</option>
+                    <option value="12">12s</option>
+                  </select>
+                </label>
+              ) : (
+                <label className="video-field">
+                  <span className="video-field__label">Length</span>
+                  <select value={segments} onChange={(e) => setSegments(Number(e.target.value))} disabled={busy}>
+                    <option value={1}>8s (1 clip)</option>
+                    <option value={2}>16s (2×8, stitched)</option>
+                    <option value={3}>24s (3×8, stitched)</option>
+                  </select>
+                </label>
+              )}
+            </div>
+
+            <label className="video-check">
+              <input type="checkbox" checked={silent} onChange={(e) => setSilent(e.target.checked)} disabled={busy} />
+              <span>Silent — remove audio/voice (recommended for landing pages)</span>
+            </label>
+
+            <label className="video-check">
+              <input type="checkbox" checked={pingPong} onChange={(e) => setPingPong(e.target.checked)} disabled={busy} />
+              <span>Seamless loop — ping-pong (plays forward then reverse, no jump; doubles length)</span>
+            </label>
+
+            <label className="video-field">
+              <span className="video-field__label">Extra direction (optional)</span>
+              <textarea
+                className="video-textarea"
+                rows={2}
+                value={extra}
+                onChange={(e) => setExtra(e.target.value)}
+                disabled={busy}
+                placeholder="e.g. drone shot over the neighborhood, golden hour, focus on the crew loading the truck"
+              />
+            </label>
+
+            <div className="video-generate">
+              <button className="btn btn--primary" onClick={handleGenerate} disabled={busy || !model}>
+                {busy ? "Generating…" : "Generate video"}
+              </button>
+              <button className="btn btn--secondary" onClick={handlePreview} disabled={busy}>
+                Preview prompt
+              </button>
+              <span className="video-estimate">
+                ≈ ${costEstimate} · plays {finalSeconds}s{isVeo && segments > 1 ? ` (${segments} clips)` : ""}{pingPong ? " ↔ loop" : ""}
+                <span className="video-estimate__note"> · estimate</span>
+              </span>
+            </div>
+          </div>
+        )}
+
+        {status && (
+          <div className="video-progress">
+            <div className="video-progress__msg"><span className="spinner spinner--sm" /> {status.message}</div>
+            <div className="img-progress-bar">
+              <div className="img-progress-bar__fill" style={{ width: `${status.progress}%` }} />
+            </div>
+          </div>
+        )}
+
+        {livePrompt && (
+          <div className="video-prompt">
+            <span className="video-prompt__label">Prompt</span>
+            <p className="video-prompt__text">{livePrompt}</p>
+          </div>
+        )}
+
+        {error && <div className="video-warn video-warn--error">{error}</div>}
+
+        {videos.length > 0 && (
+          <div className="video-gallery">
+            {videos.map((v) => (
+              <div key={v.id} className="video-card">
+                <video className="video-card__player" src={v.url} controls loop muted playsInline preload="metadata" />
+                <div className="video-card__meta">
+                  <span className="video-card__title">{v.title}</span>
+                  <span className="video-card__badge">
+                    {PROVIDER_LABEL[v.provider] || v.provider} · {v.model}
+                    {v.durationSec ? ` · ${v.durationSec}s` : ""}
+                    {v.segments > 1 ? ` · ${v.segments} clips` : ""}
+                    {v.silent ? " · muted" : ""}
+                  </span>
+                </div>
+                <div className="video-card__actions">
+                  <a className="video-card__link" href={v.url} target="_blank" rel="noreferrer">Open ↗</a>
+                  <button className="video-card__del" onClick={() => handleDelete(v.id)}>Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
 function DeploySection({ slug, status, onDeployed }) {
   const navigate = useNavigate();
   const [planning, setPlanning] = useState(false);
@@ -360,11 +762,77 @@ function DeploySection({ slug, status, onDeployed }) {
   const [confirmation, setConfirmation] = useState("");
   const [log, setLog] = useState([]);
   const [result, setResult] = useState(null);
+  const logRef = useRef(null);
+
+  // Post-deploy demo-data population (avatars + leads) — dry run → confirm → run.
+  const [leadsPerBranch, setLeadsPerBranch] = useState(5);
+  const [includeAvatars, setIncludeAvatars] = useState(true);
+  const [seedPlanning, setSeedPlanning] = useState(false);
+  const [seedPlan, setSeedPlan] = useState(null);
+  const [seedConfirmation, setSeedConfirmation] = useState("");
+  const [seeding, setSeeding] = useState(false);
+  const [seedLog, setSeedLog] = useState([]);
+  const [seedResult, setSeedResult] = useState(null);
+  const seedLogRef = useRef(null);
+
+  // Keep the streaming deploy log scrolled to the newest entry.
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [log]);
+  useEffect(() => {
+    if (seedLogRef.current) seedLogRef.current.scrollTop = seedLogRef.current.scrollHeight;
+  }, [seedLog]);
 
   // Credentials come from the Settings page (browser → request headers), so the
   // deploy flow no longer prompts for them.
   const configured = hasMenaiaSettings();
+  const demoConfigured = hasDemoDataSettings();
   const { url: menaiaUrl } = getMenaiaSettings();
+  // Demo data can run once the org has been deployed (this session or earlier).
+  const deployed = status === "deployed" || result?.success;
+
+  async function handleSeedPlan() {
+    setSeedPlanning(true);
+    setSeedPlan(null);
+    setSeedConfirmation("");
+    setSeedLog([]);
+    setSeedResult(null);
+    try {
+      const plan = await planDemoData(slug, {
+        leadsPerBranch: Number(leadsPerBranch) || 5,
+        includeAvatars,
+      });
+      setSeedPlan(plan);
+    } catch (e) {
+      setSeedResult({ success: false, error: e.message });
+    } finally {
+      setSeedPlanning(false);
+    }
+  }
+
+  async function handleSeedDemoData() {
+    if (!seedPlan || seedConfirmation !== seedPlan.confirmation) return;
+    setSeeding(true);
+    setSeedLog([]);
+    setSeedResult(null);
+    try {
+      const res = await seedDemoData(slug, {
+        leadsPerBranch: Number(leadsPerBranch) || 5,
+        includeAvatars,
+        confirmation: seedConfirmation,
+      }, {
+        onStep: (entry) => setSeedLog((prev) => [...prev, entry]),
+      });
+      setSeedLog(res.log || []);
+      setSeedResult(res.success
+        ? { success: true, actions: res.actions || [] }
+        : { success: false, error: res.error || "Demo data failed" });
+    } catch (e) {
+      setSeedResult({ success: false, error: e.message });
+    } finally {
+      setSeeding(false);
+    }
+  }
 
   const LOG_STATUS_ICONS = { running: "⟳", done: "✓", failed: "✗" };
 
@@ -396,13 +864,20 @@ function DeploySection({ slug, status, onDeployed }) {
       const res = await deployOrg(slug, options({
         expectedOrganizationId: plan.target.id,
         confirmation,
-      }));
+      }), {
+        // Append each step as it streams in so the log updates live.
+        onStep: (entry) => setLog((prev) => [...prev, entry]),
+      });
       setLog(res.log || []);
+      if (!res.success) {
+        setResult({ success: false, error: res.error || "Deploy failed" });
+        return;
+      }
       setResult({ success: true, credentials: res.credentials || [] });
       onDeployed?.();
-      // Land on the dedicated post-deploy page (results + Excel export). It reads
-      // the now-persisted deployment log, so credentials survive a refresh.
-      navigate(`/orgs/${slug}/deploy-result`);
+      // Brief pause so the final "complete" step is visible, then land on the
+      // post-deploy page (results + Excel export) which reads the persisted log.
+      setTimeout(() => navigate(`/orgs/${slug}/deploy-result`), 700);
     } catch (e) {
       setResult({ success: false, error: e.message });
     } finally {
@@ -451,6 +926,7 @@ function DeploySection({ slug, status, onDeployed }) {
               <span>{plan.totals.update} update</span>
               <span>{plan.totals.untouched} untouched</span>
             </div>
+            <div className="deploy-plan__section-label">Price book &amp; config</div>
             <div className="deploy-plan__collections">
               {plan.collections.map((collection) => (
                 <div key={collection.label}>
@@ -459,9 +935,26 @@ function DeploySection({ slug, status, onDeployed }) {
                 </div>
               ))}
             </div>
-            <div className="deploy-plan__deferred">
-              Also provisions: {plan.additional.leadStatuses} lead statuses, {plan.additional.tags} tags, {plan.additional.leadSources} lead sources, {plan.additional.reasonCodes} reason codes, {plan.additional.vehicleTypes} vehicle types, {plan.additional.vehicles} vehicles, {plan.additional.equipmentTypes} equipment types, {plan.additional.users} users, {plan.additional.paymentTerms} payment terms, {plan.additional.images} item images.
-            </div>
+            {Array.isArray(plan.additional) && (
+              <>
+                <div className="deploy-plan__section-label">Onboarding, fleet &amp; media</div>
+                <div className="deploy-plan__collections">
+                  {plan.additional.map((row) => (
+                    <div key={row.label}>
+                      <strong>{row.label}{row.reconciled === false && <span className="deploy-plan__hint" title="Reconciled during deploy — existing records are skipped on apply"> *</span>}</strong>
+                      <span>
+                        {row.reconciled === false
+                          ? `${row.create} create`
+                          : `${row.create} create / ${row.untouched} untouched`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div className="deploy-plan__deferred">
+                  * Counts shown as planned creates; the deploy still skips any that already exist (or, for users, exist in the auth provider).
+                </div>
+              </>
+            )}
             <div className="form-row">
               <label className="form-label">Type <code>{plan.confirmation}</code> to confirm this target</label>
               <input className="form-input form-input--mono" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} disabled={deploying} />
@@ -473,7 +966,7 @@ function DeploySection({ slug, status, onDeployed }) {
         )}
 
         {log.length > 0 && (
-          <div className="deploy-log">
+          <div className="deploy-log" ref={logRef}>
             {log.map((entry, i) => (
               <div key={i} className={`deploy-log__entry deploy-log__entry--${entry.status}`}>
                 <span className="deploy-log__icon">{LOG_STATUS_ICONS[entry.status] || "•"}</span>
@@ -501,6 +994,130 @@ function DeploySection({ slug, status, onDeployed }) {
             </ul>
           </div>
         )}
+
+        {/* ── Post-deploy: populate demo data (avatars + leads) ──────────── */}
+        <div className="deploy-demo">
+          <div className="deploy-demo__divider" />
+          <div className="deploy-demo__title">Populate demo data</div>
+          <div className="deploy-panel__note">
+            After deploying, seed the org with things to play with: user avatars and{" "}
+            demo leads (with contacts) addressed in each branch's zone. Runs as a real
+            org admin via the Payload &amp; avatar APIs.
+          </div>
+
+          {!deployed && (
+            <div className="deploy-panel__note deploy-panel__note--warn">
+              Deploy the org first — demo data is populated into the deployed organization.
+            </div>
+          )}
+          {deployed && !demoConfigured && (
+            <div className="deploy-panel__note deploy-panel__note--warn">
+              Add the Supabase URL, anon key, and Payload URL in <Link to="/settings">Settings → Demo Data</Link> first.
+            </div>
+          )}
+
+          <div className="deploy-demo__controls">
+            <label className="form-label deploy-demo__field">
+              Leads per branch
+              <input
+                type="number"
+                min="0"
+                max="50"
+                className="form-input deploy-demo__num"
+                value={leadsPerBranch}
+                onChange={(e) => { setLeadsPerBranch(e.target.value); setSeedPlan(null); }}
+                disabled={seeding || seedPlanning}
+              />
+            </label>
+            <label className="deploy-demo__check">
+              <input
+                type="checkbox"
+                checked={includeAvatars}
+                onChange={(e) => { setIncludeAvatars(e.target.checked); setSeedPlan(null); }}
+                disabled={seeding || seedPlanning}
+              />
+              Upload user avatars
+            </label>
+          </div>
+
+          <button
+            className="btn btn--deploy"
+            onClick={handleSeedPlan}
+            disabled={seedPlanning || seeding || !deployed || !demoConfigured}
+          >
+            {seedPlanning ? "Checking target…" : "Check target and dry run"}
+          </button>
+
+          {seedPlan && (
+            <div className="deploy-plan">
+              <div className="deploy-plan__target">
+                <strong>{seedPlan.target.name}</strong>
+                <span>ID: {seedPlan.target.id}</span>
+                <span>{seedPlan.target.slug}</span>
+                <span>{seedPlan.target.branchCount} branch(es)</span>
+                {seedPlan.actor?.email && <span>as {seedPlan.actor.email}</span>}
+              </div>
+              <div className="deploy-plan__totals">
+                <span>{seedPlan.avatars.willUpload} avatars</span>
+                <span>{seedPlan.leads.willCreate} leads</span>
+                <span>{seedPlan.leads.perBranch}/branch</span>
+              </div>
+              <div className="deploy-plan__collections">
+                {seedPlan.leads.branches.map((b) => (
+                  <div key={b.name}>
+                    <strong>{b.name}</strong>
+                    <span>
+                      {b.willCreate} create
+                      {b.already ? ` · ${b.already} already seeded` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {seedPlan.avatars.willUpload === 0 && seedPlan.leads.willCreate === 0 ? (
+                <div className="deploy-panel__note">Nothing to do — avatars and leads are already in place.</div>
+              ) : (
+                <>
+                  <div className="form-row">
+                    <label className="form-label">Type <code>{seedPlan.confirmation}</code> to confirm this target</label>
+                    <input
+                      className="form-input form-input--mono"
+                      value={seedConfirmation}
+                      onChange={(e) => setSeedConfirmation(e.target.value)}
+                      disabled={seeding}
+                    />
+                  </div>
+                  <button
+                    className="btn btn--deploy"
+                    onClick={handleSeedDemoData}
+                    disabled={seeding || seedConfirmation !== seedPlan.confirmation}
+                  >
+                    {seeding ? "Populating…" : "Populate confirmed org"}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {seedLog.length > 0 && (
+            <div className="deploy-log" ref={seedLogRef}>
+              {seedLog.map((entry, i) => (
+                <div key={i} className={`deploy-log__entry deploy-log__entry--${entry.status}`}>
+                  <span className="deploy-log__icon">{LOG_STATUS_ICONS[entry.status] || "•"}</span>
+                  <span className="deploy-log__name">{entry.name}</span>
+                  {entry.detail && <span className="deploy-log__detail">{entry.detail}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {seedResult && (
+            <div className={`deploy-result ${seedResult.success ? "deploy-result--success" : "deploy-result--error"}`}>
+              {seedResult.success
+                ? `✓ Seeded ${seedResult.actions.length} demo record(s)`
+                : `✗ ${seedResult.error}`}
+            </div>
+          )}
+        </div>
       </div>
     </SectionCard>
   );
@@ -705,9 +1322,11 @@ export default function OrgDetailPage() {
 
       <div className="detail-sections">
         {org.source === "demo" && <DemoActions org={org} onChanged={load} />}
+        {org.multiIndustry && <WorkAreaBuilderSection org={org} onChanged={load} />}
         <BranchSection branches={org.branches} />
         <CatalogSection resources={org.resources} />
         <ImagesSection org={org} />
+        <VideoSection org={org} />
         <UsersSection users={org.users} />
         <DeploySection
           slug={org.slug}

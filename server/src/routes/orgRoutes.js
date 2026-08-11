@@ -8,11 +8,14 @@ import OpenAI from 'openai';
 import * as XLSX from 'xlsx';
 import { listOrgs, getOrg, saveOrg, updateOrg, deleteOrg, updateDeploymentLog } from '../services/orgStorageService.js';
 import { deployOrg, preflightOrgDeployment } from '../services/deploymentService.js';
+import { seedDemoData, planDemoData } from '../services/demoDataService.js';
+import { addWorkAreaToOrg, generateWorkAreaCatalog } from '../services/seedGenerator/multiIndustryDemo.js';
+import { improveItemDescriptions, generateProposalContent, generateUserIdentities, inferGenderFromName } from '../services/seedGenerator/improve.js';
 import { downloadImage, findBestImage, findImageCandidates } from '../services/imageSearchService.js';
 import { generateImage, getAvailableProviders } from '../services/imageProviders.js';
 import { removeBackground as imglyRemoveBackground } from '@imgly/background-removal-node';
 import env from '../config/env.js';
-import { getMenaiaApiUrl, getMenaiaApiKey, validateMenaiaConfig } from '../config/menaiaContext.js';
+import { getMenaiaApiUrl, getMenaiaApiKey, validateMenaiaConfig, getSupabaseUrl, getSupabaseAnonKey, getPayloadUrl, validateDemoDataConfig } from '../config/menaiaContext.js';
 import logger from '../utils/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -200,6 +203,10 @@ async function pickLogoCorner(imageBuffer, W, H) {
  * behind the logo so it reads on light or busy photos.
  */
 async function composeLogo(imageBuffer, slug, logoVariants, position = 'bottom-left', backdrop = null) {
+  // Normalize the base to a 1:1 square BEFORE stamping so the logo never bleeds
+  // past the proposal's square frame. This also re-squares legacy landscape
+  // images when logos are re-applied, and is a no-op for already-square bases.
+  imageBuffer = await sharp(imageBuffer).resize(1024, 1024, { fit: 'cover' }).jpeg({ quality: 92 }).toBuffer();
   const meta = await sharp(imageBuffer).metadata();
   const W = meta.width, H = meta.height;
   const margin = Math.round(W * 0.04);
@@ -281,6 +288,20 @@ function imageFilePath(slug, key) {
 
 function imageApiUrl(slug, key) {
   return `/api/orgs/${slug}/media/${key}.jpg`;
+}
+
+// ── User-avatar helpers (one square jpg per user, keyed by email) ──────────────
+function userAvatarDir(slug) {
+  return path.join(ORGS_DIR, 'user-avatars', slug);
+}
+function userKey(email) {
+  return (email || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
+}
+function userAvatarPath(slug, key) {
+  return path.join(userAvatarDir(slug), `${key}.jpg`);
+}
+function userAvatarApiUrl(slug, key) {
+  return `/api/orgs/${slug}/user-avatar/${key}.jpg`;
 }
 
 function deepUpdateItem(org, categoryName, itemName, patch) {
@@ -475,7 +496,7 @@ async function generateImageBuffer(openai, prompt, model = 'gpt-image-1', qualit
     model,
     prompt,
     n: 1,
-    size: '1536x1024',
+    size: '1024x1024',
     quality,
   };
   const imageRes = await openai.images.generate(options);
@@ -489,16 +510,33 @@ async function generateImageBuffer(openai, prompt, model = 'gpt-image-1', qualit
   throw new Error('OpenAI returned no image data');
 }
 
+// Serializes the org-JSON read-modify-write so concurrent image saves (the bulk
+// flow now generates several at once) can't clobber each other's imageUrl update.
+// Only the fast getOrg→patch→saveOrg is inside the lock; the slow image work runs
+// in parallel. Keyed nothing fancy — a single global chain is enough here.
+let orgWriteChain = Promise.resolve();
+function withOrgWriteLock(fn) {
+  const result = orgWriteChain.then(fn, fn);
+  orgWriteChain = result.then(() => {}, () => {}); // keep the chain alive on error
+  return result;
+}
+
 async function saveItemImage(slug, categoryName, itemName, inputBuffer, patch = {}) {
   const key = imageKey(categoryName, itemName);
   fs.mkdirSync(mediaDir(slug), { recursive: true });
-  const buf = await sharp(inputBuffer).resize(1024, 768, { fit: 'cover' }).jpeg({ quality: 88 }).toBuffer();
+  // Square (1:1) so the proposal renders it without cropping and the stamped
+  // logo never bleeds past the visible frame.
+  const buf = await sharp(inputBuffer).resize(1024, 1024, { fit: 'cover' }).jpeg({ quality: 88 }).toBuffer();
   fs.writeFileSync(imageFilePath(slug, key), buf);
 
   const imageUrl = imageApiUrl(slug, key);
-  const currentOrg = getOrg(slug);
-  const updated = deepUpdateItem(currentOrg, categoryName, itemName, { imageUrl, imageUpdatedAt: Date.now(), ...patch });
-  saveOrg(updated);
+  // Guard the read-modify-write: a bare getOrg→deepUpdateItem→saveOrg would lose
+  // updates when two saves overlap (both read, both write, second wins).
+  await withOrgWriteLock(() => {
+    const currentOrg = getOrg(slug);
+    const updated = deepUpdateItem(currentOrg, categoryName, itemName, { imageUrl, imageUpdatedAt: Date.now(), ...patch });
+    saveOrg(updated);
+  });
   return imageUrl;
 }
 
@@ -711,6 +749,303 @@ router.patch('/:slug/resources', (req, res) => {
   }
 });
 
+// ── AI improve actions ────────────────────────────────────────────────────────
+
+// POST /api/orgs/:slug/improve-descriptions — regenerate the customer-facing
+// `notes` for every item (or one category) into richer 3-5 sentence copy. Body:
+// { categoryName? }. Writes the new notes back into the org and returns it.
+router.post('/:slug/improve-descriptions', async (req, res) => {
+  try {
+    const org = getOrg(req.params.slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+    if (!env.OPENAI_API_KEY) return res.status(400).json({ success: false, error: 'No OpenAI API key configured' });
+
+    const { categoryName } = req.body || {};
+    const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+    const descByName = await improveItemDescriptions(org, openai, { categoryName });
+
+    let updatedCount = 0;
+    const categories = (org.resources?.categories || []).map((category) => ({
+      ...category,
+      items: (category.items || []).map((item) => {
+        const next = descByName[item.name];
+        if (next && next !== item.itemInfo) {
+          updatedCount += 1;
+          // Single description field; drop any legacy `notes` so it can't shadow it.
+          const { notes, ...rest } = item;
+          return { ...rest, itemInfo: next };
+        }
+        return item;
+      }),
+    }));
+
+    const updated = { ...org, resources: { ...org.resources, categories } };
+    saveOrg(updated);
+    res.json({ success: true, data: updated, meta: { updated: updatedCount } });
+  } catch (err) {
+    logger.error(`[improve-descriptions] ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/orgs/:slug/generate-proposal-content — regenerate the proposalContent
+// block (about, disclaimer, payment/insurance terms, T&C, email template) and
+// apply it to every branch. Returns the updated org.
+router.post('/:slug/generate-proposal-content', async (req, res) => {
+  try {
+    const org = getOrg(req.params.slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+    if (!env.OPENAI_API_KEY) return res.status(400).json({ success: false, error: 'No OpenAI API key configured' });
+
+    const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+    const proposalContent = await generateProposalContent(org, openai);
+
+    const updated = {
+      ...org,
+      branches: (org.branches || []).map((b) => ({ ...b, ...proposalContent })),
+    };
+    saveOrg(updated);
+    res.json({ success: true, data: updated, meta: { proposalContent } });
+  } catch (err) {
+    logger.error(`[generate-proposal-content] ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Multi-industry work areas (add industry + generate its catalog) ───────────
+
+// POST /api/orgs/:slug/work-areas — add an empty work area (industry) to the org.
+router.post('/:slug/work-areas', (req, res) => {
+  try {
+    const org = getOrg(req.params.slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+    addWorkAreaToOrg(org, req.body?.name);
+    saveOrg(org);
+    res.json({ success: true, data: { org, stats: org.stats } });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/orgs/:slug/work-areas/generate-catalog — generate one industry's
+// catalog (categories + items) and append it to a work area. SSE (one o3 call).
+// Body: { workArea, industry?, categoriesPerIndustry?, itemsPerCategory? }.
+router.post('/:slug/work-areas/generate-catalog', async (req, res) => {
+  const org = getOrg(req.params.slug);
+  if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+  const apiKey = env.OPENAI_API_KEY;
+  if (!apiKey) return res.status(500).json({ success: false, error: 'OPENAI_API_KEY not configured' });
+  if (!req.body?.workArea) return res.status(400).json({ success: false, error: 'workArea is required' });
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  try {
+    const openai = new OpenAI({ apiKey });
+    const result = await generateWorkAreaCatalog(org, {
+      workArea: req.body.workArea,
+      industry: req.body.industry,
+      categoriesPerIndustry: req.body.categoriesPerIndustry,
+      itemsPerCategory: req.body.itemsPerCategory,
+    }, openai, (entry) => send({ type: 'step', entry }));
+    send({ type: 'done', result: result.success
+      ? { success: true, addedCats: result.addedCats, addedItems: result.addedItems, stats: result.org.stats, log: result.log }
+      : { success: false, error: result.error, log: result.log } });
+    res.end();
+  } catch (err) {
+    send({ type: 'done', result: { success: false, error: err.message, log: [] } });
+    res.end();
+  }
+});
+
+// ── User management (manual edits + AI identities/avatars) ────────────────────
+
+// GET /api/orgs/:slug/user-avatar/:filename — serve a stored user avatar
+router.get('/:slug/user-avatar/:filename', (req, res) => {
+  const key = req.params.filename.replace(/\.jpg$/i, '');
+  const p = userAvatarPath(req.params.slug, key);
+  if (!fs.existsSync(p)) return res.status(404).send('Not found');
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Cache-Control', 'no-cache');
+  fs.createReadStream(p).pipe(res);
+});
+
+// PATCH /api/orgs/:slug/users — replace the org's users array (manual edits)
+router.patch('/:slug/users', (req, res) => {
+  try {
+    const org = getOrg(req.params.slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+    const { users } = req.body;
+    if (!Array.isArray(users)) return res.status(400).json({ success: false, error: 'users must be an array' });
+    const updated = saveOrg({ ...org, users });
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/orgs/:slug/users/generate-identities — AI name+about for users.
+// Body: { emails? } (omit for all users).
+router.post('/:slug/users/generate-identities', async (req, res) => {
+  try {
+    const org = getOrg(req.params.slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+    if (!env.OPENAI_API_KEY) return res.status(400).json({ success: false, error: 'No OpenAI API key configured' });
+
+    const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+    const identities = await generateUserIdentities(org, openai, { emails: req.body?.emails });
+
+    let updatedCount = 0;
+    const users = (org.users || []).map((u) => {
+      const next = identities[u.email];
+      if (!next) return u;
+      updatedCount += 1;
+      return { ...u, ...(next.name ? { name: next.name } : {}), ...(next.about ? { about: next.about } : {}) };
+    });
+    const updated = saveOrg({ ...org, users });
+    res.json({ success: true, data: updated, meta: { updated: updatedCount } });
+  } catch (err) {
+    logger.error(`[generate-identities] ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Build a gender-aware AI headshot for a user and store it as a square jpg.
+// Gender is inferred from the user's first name (cheap gpt-4o-mini) so the photo
+// matches the person; falls back to a stored user.gender if present. The image
+// itself uses gpt-image-1 'low' — the cheapest configured model (~$0.006/image).
+async function generateAndSaveUserAvatar(slug, org, user, openai, imageOpts = {}) {
+  const firstName = (user.name || '').trim().split(/\s+/)[0] || '';
+  const gender = user.gender || (await inferGenderFromName(firstName, openai));
+  const genderWord = gender === 'male' ? 'male' : gender === 'female' ? 'female' : '';
+  const role = user.role || 'team member';
+  const industry = org.industry || 'home services';
+  const prompt = `Professional corporate headshot photograph of a ${genderWord} ${role} at a ${industry} company. Friendly approachable expression, business-casual attire, looking directly at the camera, soft evenly-lit neutral studio background, sharp focus, head and shoulders, centered. Realistic photo.`.replace(/\s+/g, ' ').trim();
+
+  // Provider/model/quality are chosen in the UI (defaults to gpt-image-1 low).
+  const { provider = 'openai', model = 'gpt-image-1', quality = 'low' } = imageOpts;
+  const raw = await generateImage(prompt, { provider, model, quality });
+  const buf = await sharp(raw).resize(512, 512, { fit: 'cover' }).jpeg({ quality: 88 }).toBuffer();
+  const key = userKey(user.email);
+  fs.mkdirSync(userAvatarDir(slug), { recursive: true });
+  fs.writeFileSync(userAvatarPath(slug, key), buf);
+  return userAvatarApiUrl(slug, key);
+}
+
+// POST /api/orgs/:slug/users/avatar/generate — AI headshot for one user.
+// Body: { email }.
+router.post('/:slug/users/avatar/generate', async (req, res) => {
+  try {
+    const org = getOrg(req.params.slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+    if (!env.OPENAI_API_KEY) return res.status(400).json({ success: false, error: 'No OpenAI API key configured' });
+
+    const { email, provider, model, quality } = req.body || {};
+    const user = (org.users || []).find((u) => u.email === email);
+    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+    const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+    const avatarUrl = await generateAndSaveUserAvatar(req.params.slug, org, user, openai, { provider, model, quality });
+
+    const users = (org.users || []).map((u) => (u.email === email ? { ...u, avatarUrl } : u));
+    saveOrg({ ...org, users });
+    res.json({ success: true, data: { avatarUrl, email } });
+  } catch (err) {
+    logger.error(`[user-avatar generate] ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/orgs/:slug/users/avatars/bulk-generate — SSE stream; AI headshot for
+// every user (skip those that already have one unless overwrite). Body: { overwrite? }.
+router.post('/:slug/users/avatars/bulk-generate', async (req, res) => {
+  const org = getOrg(req.params.slug);
+  if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+  if (!env.OPENAI_API_KEY) return res.status(400).json({ success: false, error: 'No OpenAI API key configured' });
+
+  const overwrite = !!req.body?.overwrite;
+  const { provider, model, quality } = req.body || {};
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  // Stop generating (and stop spending) the moment the client disconnects.
+  // NOTE: listen on `res`, not `req` — a buffered POST's `req` stream closes as
+  // soon as the body is read, which would abort the loop after one image.
+  let aborted = false;
+  res.on('close', () => { aborted = true; });
+
+  const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+  const targets = (org.users || []).filter((u) => overwrite || !u.avatarUrl);
+  let working = org;
+  let generated = 0;
+  send({ type: 'start', total: targets.length });
+
+  for (let i = 0; i < targets.length; i++) {
+    if (aborted) break;
+    const user = targets[i];
+    send({ type: 'progress', email: user.email, index: i, total: targets.length, status: 'generating' });
+    try {
+      const avatarUrl = await generateAndSaveUserAvatar(req.params.slug, working, user, openai, { provider, model, quality });
+      working = { ...working, users: (working.users || []).map((u) => (u.email === user.email ? { ...u, avatarUrl } : u)) };
+      saveOrg(working); // persist incrementally so partial progress survives
+      generated += 1;
+      send({ type: 'progress', email: user.email, index: i, total: targets.length, status: 'done', avatarUrl });
+    } catch (err) {
+      send({ type: 'progress', email: user.email, index: i, total: targets.length, status: 'error', error: err.message });
+    }
+  }
+  send({ type: 'done', generated, total: targets.length });
+  res.end();
+});
+
+// POST /api/orgs/:slug/users/avatar/upload — manual avatar upload (field: avatar).
+router.post('/:slug/users/avatar/upload', mediaUpload.single('avatar'), async (req, res) => {
+  try {
+    const org = getOrg(req.params.slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+    const email = req.body.email;
+    const user = (org.users || []).find((u) => u.email === email);
+    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+    if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded' });
+
+    const buf = await sharp(req.file.buffer).resize(512, 512, { fit: 'cover' }).jpeg({ quality: 88 }).toBuffer();
+    const key = userKey(email);
+    fs.mkdirSync(userAvatarDir(req.params.slug), { recursive: true });
+    fs.writeFileSync(userAvatarPath(req.params.slug, key), buf);
+
+    const avatarUrl = userAvatarApiUrl(req.params.slug, key);
+    const users = (org.users || []).map((u) => (u.email === email ? { ...u, avatarUrl } : u));
+    saveOrg({ ...org, users });
+    res.json({ success: true, data: { avatarUrl, email } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE /api/orgs/:slug/users/avatar — remove a user's avatar. Body: { email }.
+router.delete('/:slug/users/avatar', (req, res) => {
+  try {
+    const org = getOrg(req.params.slug);
+    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+    const { email } = req.body || {};
+    const key = userKey(email);
+    try { fs.unlinkSync(userAvatarPath(req.params.slug, key)); } catch { /* already gone */ }
+    const users = (org.users || []).map((u) => {
+      if (u.email !== email) return u;
+      const { avatarUrl, ...rest } = u;
+      return rest;
+    });
+    const updated = saveOrg({ ...org, users });
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── Item image management ─────────────────────────────────────────────────────
 
 // GET /api/orgs/:slug/media/:filename — serve stored item image
@@ -737,7 +1072,7 @@ router.post('/:slug/resources/item-image', mediaUpload.single('image'), async (r
     const dir = mediaDir(req.params.slug);
     fs.mkdirSync(dir, { recursive: true });
 
-    const buf = await sharp(req.file.buffer).resize(1024, 768, { fit: 'cover' }).jpeg({ quality: 88 }).toBuffer();
+    const buf = await sharp(req.file.buffer).resize(1024, 1024, { fit: 'cover' }).jpeg({ quality: 88 }).toBuffer();
     fs.writeFileSync(imageFilePath(req.params.slug, key), buf);
 
     const url = imageApiUrl(req.params.slug, key);
@@ -860,7 +1195,7 @@ router.post('/:slug/resources/item-image/edit', async (req, res) => {
       image: imageFile,
       prompt: editPrompt,
       n: 1,
-      size: '1536x1024',
+      size: '1024x1024',
     });
 
     const b64 = response.data?.[0]?.b64_json;
@@ -1305,33 +1640,134 @@ router.post('/:slug/deploy/plan', async (req, res) => {
   }
 });
 
-// POST /api/orgs/:slug/deploy — upsert into the single organization visible to the supplied admin
+// POST /api/orgs/:slug/deploy — upsert into the single organization visible to
+// the supplied admin. Streams each step live as Server-Sent Events so the UI can
+// show progress ("running"/"done"/"failed") in real time. Pre-flight validation
+// errors are still returned as plain JSON before the stream opens.
 router.post('/:slug/deploy', async (req, res) => {
+  const org = getOrg(req.params.slug);
+  if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+
+  const validationError = validateDeploymentRequest();
+  if (validationError) return res.status(400).json({ success: false, error: validationError });
+  if (!req.body.expectedOrganizationId || !req.body.confirmation) {
+    return res.status(400).json({ success: false, error: 'Run the deployment plan and confirm its target before deploying' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
   try {
-    const org = getOrg(req.params.slug);
-    if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
-
-    const validationError = validateDeploymentRequest();
-    if (validationError) return res.status(400).json({ success: false, error: validationError });
-    if (!req.body.expectedOrganizationId || !req.body.confirmation) {
-      return res.status(400).json({ success: false, error: 'Run the deployment plan and confirm its target before deploying' });
-    }
-
     logger.info(`Deploying org ${org.slug} to existing organization ${req.body.expectedOrganizationId} at ${getMenaiaApiUrl()}`);
-    const result = await deployOrg(org, deploymentOptions(req.body));
+    // Each step from deployOrg is forwarded as a `step` event; the final result
+    // (with the full log + credentials) arrives as a `done` event.
+    const result = await deployOrg(org, deploymentOptions(req.body), (entry) => send({ type: 'step', entry }));
 
     updateDeploymentLog(org.slug, result, {
       id: req.body.expectedOrganizationId,
       apiUrl: getMenaiaApiUrl(),
     });
 
-    res.status(result.success ? 200 : 400).json({
-      success: result.success,
-      data: result,
-      error: result.error,
-    });
+    send({ type: 'done', result });
+    res.end();
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    send({ type: 'done', result: { success: false, error: err.message, log: [], actions: [], credentials: [] } });
+    res.end();
+  }
+});
+
+// Pick the admin to authenticate as for the demo-data step. Prefers Super Admin
+// / Admin (covers manage:User for avatars + BRANCH_MANAGEMENT for leads). Reads
+// the credentials persisted from the last deploy, falling back to the draft's
+// own users — their passwords are deterministic, so even when a re-deploy skips
+// creation with a 409 (and records nothing) we can still resolve the admin login.
+function resolveAdminCredentials(org) {
+  // Mirror the deploy's password padding (API requires >= 8 chars).
+  const pad = (p) => ((p || '').length >= 8 ? p : (p || 'Password').padEnd(8, '0'));
+  const fromCreds = org?.deployment?.credentials || [];
+  const fromDraft = (org?.users || []).map((u) => ({ email: u.email, password: pad(u.password), role: u.role }));
+  const pickAdmin = (pool) => {
+    const byRole = (re) => pool.find((c) => re.test(String(c.role || '')));
+    return byRole(/super\s*admin/i) || byRole(/^admin$/i) || byRole(/admin/i) || byRole(/sales\s*admin/i) || null;
+  };
+  const admin = pickAdmin(fromCreds) || pickAdmin(fromDraft);
+  return admin ? { email: admin.email, password: admin.password, role: admin.role } : null;
+}
+
+// Shared pre-flight for the demo-data endpoints: validate config + deploy state,
+// resolve the admin login, and assemble the service options. Returns either
+// `{ error }` (caller responds 400) or `{ options, admin }`.
+function demoDataPreflight(org, req) {
+  try { validateMenaiaConfig(); validateDemoDataConfig(); } catch (err) { return { error: err.message }; }
+  if (!org.deployment?.lastDeployedAt) {
+    return { error: 'Deploy the org before populating demo data' };
+  }
+  const admin = resolveAdminCredentials(org);
+  if (!admin) {
+    return { error: 'No admin credentials on file — re-deploy to capture them' };
+  }
+  return {
+    admin,
+    options: {
+      apiUrl: getMenaiaApiUrl(),
+      supabaseUrl: getSupabaseUrl(),
+      anonKey: getSupabaseAnonKey(),
+      payloadUrl: getPayloadUrl(),
+      adminEmail: admin.email,
+      adminPassword: admin.password,
+      leadsPerBranch: Number(req.body?.leadsPerBranch) || 5,
+      includeAvatars: req.body?.includeAvatars !== false,
+      confirmation: req.body?.confirmation,
+    },
+  };
+}
+
+// POST /api/orgs/:slug/deploy/demo-data/plan — dry run. Authenticates as the org
+// admin, resolves the live target org, and returns what a populate would create
+// (avatars + leads per branch) plus a confirmation token. Read-only JSON.
+router.post('/:slug/deploy/demo-data/plan', async (req, res) => {
+  const org = getOrg(req.params.slug);
+  if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+  const pre = demoDataPreflight(org, req);
+  if (pre.error) return res.status(400).json({ success: false, error: pre.error });
+  try {
+    logger.info(`Planning demo data for ${org.slug} as ${pre.admin.email} (${pre.admin.role})`);
+    const plan = await planDemoData(org, pre.options);
+    res.json({ success: true, data: plan });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/orgs/:slug/deploy/demo-data — post-deploy population. Authenticates
+// as a real org admin (Supabase password grant) and seeds user avatars + N demo
+// leads per branch via the Payload REST + NestJS avatar APIs (which the service
+// key can't reach). Requires the confirmation token from the dry run. Streams
+// progress as SSE, same shape as /deploy.
+router.post('/:slug/deploy/demo-data', async (req, res) => {
+  const org = getOrg(req.params.slug);
+  if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+  const pre = demoDataPreflight(org, req);
+  if (pre.error) return res.status(400).json({ success: false, error: pre.error });
+  if (!pre.options.confirmation) {
+    return res.status(400).json({ success: false, error: 'Run the dry run and confirm its target before populating' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  try {
+    logger.info(`Populating demo data for ${org.slug} as ${pre.admin.email} (${pre.admin.role})`);
+    const result = await seedDemoData(org, pre.options, (entry) => send({ type: 'step', entry }));
+    send({ type: 'done', result });
+    res.end();
+  } catch (err) {
+    send({ type: 'done', result: { success: false, error: err.message, log: [], actions: [] } });
+    res.end();
   }
 });
 
