@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getMenaiaApiKey, getMenaiaApiUrl } from '../config/menaiaContext.js';
+import { getMenaiaApiKey, getMenaiaApiUrl, getSupabaseUrl, getSupabaseAnonKey } from '../config/menaiaContext.js';
 import logger from '../utils/logger.js';
 
 const PAGE_LIMIT = 100;
@@ -161,31 +161,72 @@ export function validateOrgForDeployment(org) {
   return true;
 }
 
+// Supabase password grant → session (for the admin-user deploy mode).
+async function supabaseLogin({ supabaseUrl, anonKey, email, password }) {
+  const url = (supabaseUrl || getSupabaseUrl() || '').replace(/\/+$/, '');
+  const key = anonKey || getSupabaseAnonKey();
+  if (!url || !key) throw new Error('Supabase URL + anon key are required for admin-user deploy (set them in Settings → Demo Data)');
+  const res = await fetch(`${url}/auth/v1/token?grant_type=password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: key },
+    body: JSON.stringify({ email, password }),
+  });
+  const session = await res.json().catch(() => null);
+  if (!res.ok || !session?.access_token) {
+    const reason = session?.error_description || session?.msg || session?.message || res.statusText;
+    throw new Error(`Admin sign-in failed (${email}): ${reason}`);
+  }
+  return session;
+}
+
 /**
- * Authenticate against the Menaia NestJS API with a per-target service-account
- * API key (format `mk_live_…`). The key is bound to exactly one organization,
- * so it scopes every request — no Supabase password grant, no cookies.
+ * Authenticate against the Menaia NestJS API. Two modes:
  *
- * New `options.credentials` shape: `{ apiKey }`
- *   (replaces the old `{ email, password, supabaseUrl, publishableKey, vercelToken }`).
+ * - SERVICE (default): a per-target service-account API key (`mk_live_…`), bound
+ *   to one org — scopes every request via bearer, no user needed.
+ *   `credentials = { apiKey }`.
+ * - USER (admin): a real org admin via Supabase password grant → JWT + optional
+ *   `X-Organization-Id`. Use this when the service key lacks an ability the
+ *   admin has (e.g. `create Item` — see the migration gap where service accounts
+ *   can't create catalog items). `credentials = { email, password, organizationId?, supabaseUrl?, anonKey? }`.
  *
- * Returns `{ headers, user }` where `headers` carry the bearer token and
- * `user` is the calling principal/actor resolved from `GET /v1/me`.
+ * Returns `{ headers, mode, user }` where `headers` carry the bearer token
+ * (+ X-Organization-Id in user mode) and `user` is resolved from `GET /v1/me`.
  */
 async function authenticate(credentials, baseUrl) {
-  const apiKey = credentials?.apiKey || getMenaiaApiKey();
-  if (!apiKey) throw new Error('A Menaia API key (credentials.apiKey) is required');
+  const url = baseUrl || getMenaiaApiUrl();
+  let auth;
 
-  const auth = {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    user: null,
-  };
+  if (credentials?.email && credentials?.password) {
+    // USER (admin) mode.
+    const session = await supabaseLogin(credentials);
+    auth = {
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      mode: 'user',
+      user: null,
+    };
+    // Scope to the target org when known (required if the admin is a member of
+    // more than one org; harmless when they belong to just one).
+    if (credentials.organizationId) auth.headers['X-Organization-Id'] = String(credentials.organizationId);
+  } else {
+    // SERVICE mode.
+    const apiKey = credentials?.apiKey || getMenaiaApiKey();
+    if (!apiKey) throw new Error('A Menaia API key (credentials.apiKey) is required');
+    auth = {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      mode: 'service',
+      user: null,
+    };
+  }
 
-  // Resolve the calling principal (actor) + bound org from /v1/me.
-  const me = await apiCall(baseUrl || getMenaiaApiUrl(), auth, 'GET', '/me');
+  // Resolve the calling principal (actor) + org from /v1/me.
+  const me = await apiCall(url, auth, 'GET', '/me');
   auth.user = {
     id: me?.user?.id ?? null,
     email: me?.user?.email ?? null,
@@ -193,6 +234,11 @@ async function authenticate(credentials, baseUrl) {
     organizationName: me?.organization?.name ?? null,
     principal: me?.principal ?? null,
   };
+  // In user mode without an explicit target, fall back to the admin's sole org
+  // so resolveScopedOrganization + the confirmation stay stable.
+  if (auth.mode === 'user' && !auth.headers['X-Organization-Id'] && auth.user.organizationId) {
+    auth.headers['X-Organization-Id'] = String(auth.user.organizationId);
+  }
   return auth;
 }
 

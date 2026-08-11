@@ -1607,16 +1607,37 @@ router.post('/:slug/bulk-logo-apply', async (req, res) => {
 function deploymentOptions(body) {
   // Resolve via the per-request Menaia context (Settings-page headers, falling
   // back to .env) so the deploy targets the active org/key.
+  // Two auth modes: SERVICE (default, service-account key) or USER (a real org
+  // admin via Supabase JWT) — the latter to get around the service account's
+  // missing `create Item` ability (Menaia migration gap). Signalled by
+  // body.deployMode === 'user' + admin email/password.
+  const credentials = body.deployMode === 'user'
+    ? {
+        email: body.adminEmail,
+        password: body.adminPassword,
+        organizationId: body.expectedOrganizationId,
+        supabaseUrl: getSupabaseUrl(),
+        anonKey: getSupabaseAnonKey(),
+      }
+    : { apiKey: getMenaiaApiKey() };
   return {
     apiUrl: getMenaiaApiUrl(),
     expectedOrganizationId: body.expectedOrganizationId,
     confirmation: body.confirmation,
-    credentials: { apiKey: getMenaiaApiKey() },
+    credentials,
   };
 }
 
-function validateDeploymentRequest() {
+// SERVICE mode needs the Menaia key; USER mode needs the Menaia API URL +
+// Supabase config (admin email/password come in the request body).
+function validateDeploymentRequest(body) {
   try {
+    if (body?.deployMode === 'user') {
+      if (!getMenaiaApiUrl()) return 'Menaia API URL is required (Settings)';
+      if (!getSupabaseUrl() || !getSupabaseAnonKey()) return 'Supabase URL + anon key are required for admin-user deploy (Settings → Demo Data)';
+      if (!body.adminEmail || !body.adminPassword) return 'Admin email and password are required for admin-user deploy';
+      return null;
+    }
     validateMenaiaConfig();
     return null;
   } catch (err) {
@@ -1629,7 +1650,7 @@ router.post('/:slug/deploy/plan', async (req, res) => {
   try {
     const org = getOrg(req.params.slug);
     if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
-    const validationError = validateDeploymentRequest();
+    const validationError = validateDeploymentRequest(req.body);
     if (validationError) return res.status(400).json({ success: false, error: validationError });
 
     logger.info(`Planning deployment for ${org.slug} to ${getMenaiaApiUrl()}`);
@@ -1648,7 +1669,7 @@ router.post('/:slug/deploy', async (req, res) => {
   const org = getOrg(req.params.slug);
   if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
 
-  const validationError = validateDeploymentRequest();
+  const validationError = validateDeploymentRequest(req.body);
   if (validationError) return res.status(400).json({ success: false, error: validationError });
   if (!req.body.expectedOrganizationId || !req.body.confirmation) {
     return res.status(400).json({ success: false, error: 'Run the deployment plan and confirm its target before deploying' });

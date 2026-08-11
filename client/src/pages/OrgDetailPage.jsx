@@ -764,6 +764,13 @@ function DeploySection({ slug, status, onDeployed }) {
   const [result, setResult] = useState(null);
   const logRef = useRef(null);
 
+  // Auth mode for the deploy: "service" (service-account key) or "user" (real
+  // org admin via Supabase JWT). User mode gets around the service account's
+  // missing `create Item` ability (Menaia migration gap).
+  const [deployMode, setDeployMode] = useState("service");
+  const [adminEmail, setAdminEmail] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+
   // Post-deploy demo-data population (avatars + leads) — dry run → confirm → run.
   const [leadsPerBranch, setLeadsPerBranch] = useState(5);
   const [includeAvatars, setIncludeAvatars] = useState(true);
@@ -837,7 +844,10 @@ function DeploySection({ slug, status, onDeployed }) {
   const LOG_STATUS_ICONS = { running: "⟳", done: "✓", failed: "✗" };
 
   function options(extra = {}) {
-    return { ...extra };
+    const auth = deployMode === "user"
+      ? { deployMode: "user", adminEmail: adminEmail.trim(), adminPassword }
+      : {};
+    return { ...auth, ...extra };
   }
 
   async function handlePlan() {
@@ -903,10 +913,39 @@ function DeploySection({ slug, status, onDeployed }) {
           </div>
         )}
 
+        {/* Auth mode — service key vs a real org admin (JWT). Admin mode works
+            around the service account's missing `create Item` ability. */}
+        <div className="deploy-authmode">
+          <label className="deploy-authmode__opt">
+            <input type="radio" name="deployMode" checked={deployMode === "service"} onChange={() => setDeployMode("service")} disabled={planning || deploying} />
+            Service key
+          </label>
+          <label className="deploy-authmode__opt">
+            <input type="radio" name="deployMode" checked={deployMode === "user"} onChange={() => setDeployMode("user")} disabled={planning || deploying} />
+            Admin user (JWT)
+          </label>
+        </div>
+        {deployMode === "user" && (
+          <div className="deploy-authmode__fields">
+            <div className="deploy-panel__note">
+              Signs in as a real org admin (needs the API URL + Supabase config from{" "}
+              <Link to="/settings">Settings</Link>). Use this when the service key can't create items.
+            </div>
+            <div className="form-row">
+              <label className="form-label">Admin email</label>
+              <input className="form-input" type="email" placeholder="admin@your-org.com" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} disabled={planning || deploying} />
+            </div>
+            <div className="form-row">
+              <label className="form-label">Admin password</label>
+              <input className="form-input" type="password" placeholder="••••••••" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} disabled={planning || deploying} />
+            </div>
+          </div>
+        )}
+
         <button
           className="btn btn--deploy"
           onClick={handlePlan}
-          disabled={planning || deploying || !configured}
+          disabled={planning || deploying || (deployMode === "user" ? !(adminEmail.trim() && adminPassword && demoConfigured) : !configured)}
         >
           {planning ? "Checking target…" : "Check target and dry run"}
         </button>
