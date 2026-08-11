@@ -3,7 +3,7 @@ import {
   getMenaiaSettings,
   saveMenaiaSettings,
   hasMenaiaSettings,
-  hasDemoDataSettings,
+  hasAdminAuthSettings,
 } from "../services/menaiaSettings.js";
 
 // Single place to configure the Menaia API credentials. Stored in this browser
@@ -18,14 +18,13 @@ export default function SettingsPage() {
   // Demo-data population config (Supabase auth + Payload REST host).
   const [supabaseUrl, setSupabaseUrl] = useState(initial.supabaseUrl);
   const [supabaseAnonKey, setSupabaseAnonKey] = useState(initial.supabaseAnonKey);
-  const [payloadUrl, setPayloadUrl] = useState(initial.payloadUrl);
   const [showAnon, setShowAnon] = useState(false);
   const [demoStatus, setDemoStatus] = useState(null);
 
   const connected = hasMenaiaSettings();
-  const demoConnected = hasDemoDataSettings();
+  const adminAuthConnected = hasAdminAuthSettings();
   const canSave = Boolean(url.trim() && key.trim());
-  const canSaveDemo = Boolean(supabaseUrl.trim() && supabaseAnonKey.trim() && payloadUrl.trim());
+  const canSaveAdminAuth = Boolean(supabaseUrl.trim() && supabaseAnonKey.trim());
 
   function handleChange(setter) {
     return (e) => {
@@ -42,17 +41,16 @@ export default function SettingsPage() {
   }
 
   function handleSave() {
-    const saved = saveMenaiaSettings({ url, key, supabaseUrl, supabaseAnonKey, payloadUrl });
+    const saved = saveMenaiaSettings({ url, key, supabaseUrl, supabaseAnonKey });
     setUrl(saved.url);
     setKey(saved.key);
     setStatus("saved");
   }
 
-  function handleSaveDemo() {
-    const saved = saveMenaiaSettings({ url, key, supabaseUrl, supabaseAnonKey, payloadUrl });
+  function handleSaveAdminAuth() {
+    const saved = saveMenaiaSettings({ url, key, supabaseUrl, supabaseAnonKey });
     setSupabaseUrl(saved.supabaseUrl);
     setSupabaseAnonKey(saved.supabaseAnonKey);
-    setPayloadUrl(saved.payloadUrl);
     setDemoStatus("saved");
   }
 
@@ -168,22 +166,23 @@ export default function SettingsPage() {
             </svg>
           </div>
           <div className="conn-card__heading">
-            <h2 className="conn-card__title">Demo Data</h2>
+            <h2 className="conn-card__title">Admin-user deploy</h2>
             <p className="conn-card__subtitle">Post-deploy population (avatars + leads)</p>
           </div>
           <span
-            className={`conn-pill ${demoConnected ? "conn-pill--ok" : "conn-pill--off"}`}
+            className={`conn-pill ${adminAuthConnected ? "conn-pill--ok" : "conn-pill--off"}`}
           >
             <span className="conn-pill__dot" />
-            {demoConnected ? "Connected" : "Not configured"}
+            {adminAuthConnected ? "Connected" : "Not configured"}
           </span>
         </div>
 
         <div className="conn-card__body">
           <p className="conn-note">
-            Populating demo records (user avatars + leads) signs in as a real org
-            admin via <strong>Supabase</strong> to reach the Payload REST + avatar
-            APIs the service key can't. These also live in this browser only.
+            The optional &quot;Admin user (JWT)&quot; deploy mode signs in as a real org
+            admin via <strong>Supabase</strong> instead of using the service key. Only
+            needed while a key can&apos;t do the whole deploy. These also live in this
+            browser only.
           </p>
 
           <div className="form-row">
@@ -224,32 +223,15 @@ export default function SettingsPage() {
             </div>
             <span className="form-hint">Public client key used only for the password grant.</span>
           </div>
-
-          <div className="form-row">
-            <label className="form-label" htmlFor="payload-url">
-              Payload / Web URL
-            </label>
-            <input
-              id="payload-url"
-              className="form-input"
-              placeholder="http://127.0.0.1:3000"
-              value={payloadUrl}
-              onChange={handleDemoChange(setPayloadUrl)}
-            />
-            <span className="form-hint">
-              The Next/Payload host that serves <code>/api/&lt;collection&gt;</code> — usually
-              the same as the Menaia URL in production.
-            </span>
-          </div>
         </div>
 
         <div className="conn-card__footer">
           <button
             className="btn btn--primary"
-            onClick={handleSaveDemo}
-            disabled={!canSaveDemo}
+            onClick={handleSaveAdminAuth}
+            disabled={!canSaveAdminAuth}
           >
-            Save demo-data config
+            Save admin-user config
           </button>
           {demoStatus === "saved" && (
             <span className="conn-saved">

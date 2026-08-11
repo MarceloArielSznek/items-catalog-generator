@@ -37,8 +37,10 @@ const LEAD_NOTES = [
   'Interested in a full assessment. Flexible on timing.',
   'Repeat customer exploring a new project for their property.',
 ];
-// Queryable top-level marker so re-runs are idempotent per branch.
+// Slug of the lead source every seeded lead is filed under, so re-runs can
+// count exactly what this tool created (and an operator can bulk-delete it).
 const DEMO_MARKER = 'demo-seed';
+const DEMO_SOURCE_NAME = 'Demo Seed';
 
 const pick = (arr, i) => arr[i % arr.length];
 const rand = (arr) => arr[Math.floor(Math.random() * arr.length)];
@@ -70,83 +72,18 @@ function parseBranchLocation(address) {
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
-function buildSupabaseCookie(supabaseUrl, session) {
-  const ref = new URL(supabaseUrl).hostname.split('.')[0];
-  const name = `sb-${ref}-auth-token`;
-  const payload = JSON.stringify({
-    access_token: session.access_token,
-    refresh_token: session.refresh_token,
-    token_type: session.token_type ?? 'bearer',
-    expires_in: session.expires_in,
-    expires_at: session.expires_at,
-    user: session.user,
-  });
-  const b64 = 'base64-' + Buffer.from(payload).toString('base64');
-  const CHUNK = 3180;
-  const chunks = [];
-  for (let i = 0; i < b64.length; i += CHUNK) chunks.push(b64.slice(i, i + CHUNK));
-  return chunks.map((c, i) => `${name}.${i}=${c}`).join('; ');
-}
-
 /**
- * Authenticate as a REAL user via the Supabase password grant. The returned
- * `accessToken` is a Bearer for the NestJS `/v1` API (avatars); the `cookie` is
- * the chunked `sb-<ref>-auth-token` the Payload REST `/api` expects (leads).
- * One login serves both.
+ * One call against the Menaia NestJS API with the org-bound service key. Same
+ * bearer the deploy uses — demo data no longer signs in as a real user, so
+ * there is no session, cookie or Supabase round-trip on this path.
  */
-async function authenticateAsUser({ supabaseUrl, anonKey, email, password }) {
-  const res = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', apikey: anonKey },
-    body: JSON.stringify({ email, password }),
-  });
-  const session = await res.json().catch(() => null);
-  if (!res.ok || !session?.access_token) {
-    const reason = session?.error_description || session?.msg || session?.message || res.statusText;
-    throw new Error(`Admin sign-in failed (${email}): ${reason}`);
-  }
-  return {
-    accessToken: session.access_token,
-    cookie: buildSupabaseCookie(supabaseUrl, session),
-    userId: session.user?.id || null,
-    email: session.user?.email || email,
-  };
-}
-
-function payloadBaseUrl(baseUrl) {
+async function apiCall(baseUrl, apiKey, method, pathName, body) {
   const base = baseUrl.replace(/\/+$/, '');
-  return base.endsWith('/api') ? base : `${base}/api`;
-}
-
-async function payloadCall(baseUrl, cookie, method, pathAndQuery, body) {
-  const res = await fetch(`${payloadBaseUrl(baseUrl)}${pathAndQuery}`, {
-    method,
-    headers: { Cookie: cookie, 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  let result;
-  try { result = text ? JSON.parse(text) : null; } catch { result = text; }
-  if (!res.ok) {
-    const fieldErr = result?.errors?.[0]?.data?.errors?.[0];
-    const message = (fieldErr && `${fieldErr.path}: ${fieldErr.message}`)
-      || result?.errors?.[0]?.message || result?.message || result || res.statusText;
-    throw new Error(`${method} /api${pathAndQuery.split('?')[0]} -> ${res.status}: ${message}`);
-  }
-  return result;
-}
-
-function v1BaseUrl(baseUrl) {
-  const base = baseUrl.replace(/\/+$/, '');
-  return base.endsWith('/v1') ? base : `${base}/v1`;
-}
-
-async function v1Call(baseUrl, token, orgId, method, pathName, body) {
-  const res = await fetch(`${v1BaseUrl(baseUrl)}${pathName}`, {
+  const root = base.endsWith('/v1') ? base : `${base}/v1`;
+  const res = await fetch(`${root}${pathName}`, {
     method,
     headers: {
-      Authorization: `Bearer ${token}`,
-      'X-Organization-Id': String(orgId),
+      Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -155,21 +92,43 @@ async function v1Call(baseUrl, token, orgId, method, pathName, body) {
   let result;
   try { result = text ? JSON.parse(text) : null; } catch { result = text; }
   if (!res.ok) {
-    const message = result?.message || result?.error?.message || result || res.statusText;
-    throw new Error(`${method} /v1${pathName} -> ${res.status}: ${message}`);
+    const message = result?.message || result?.errors?.[0]?.message || result || res.statusText;
+    throw new Error(`${method} /v1${pathName.split('?')[0]} -> ${res.status}: ${message}`);
   }
   return result;
 }
 
-// Upload one avatar via the NestJS admin route (manage:User). presign → PUT → register.
-async function uploadUserAvatar(apiUrl, token, orgId, userId, fileBuffer, filename) {
+// Lists paginate as `{ data, meta: { pagination: { pageCount } } }`.
+async function listAll(baseUrl, apiKey, collection, params = {}) {
+  const docs = [];
+  let page = 1;
+  let pageCount = 1;
+  do {
+    const query = new URLSearchParams({ pageSize: '100', page: String(page), ...params });
+    const result = await apiCall(baseUrl, apiKey, 'GET', `/${collection}?${query}`);
+    docs.push(...(result?.data || []));
+    pageCount = Number(result?.meta?.pagination?.pageCount) || 1;
+    page += 1;
+  } while (page <= pageCount);
+  return docs;
+}
+
+// `pageSize=1` — we only want the total off the pagination envelope.
+async function countLeads(baseUrl, apiKey, params) {
+  const query = new URLSearchParams({ pageSize: '1', page: '1', ...params });
+  const result = await apiCall(baseUrl, apiKey, 'GET', `/leads?${query}`);
+  return Number(result?.meta?.pagination?.total) || 0;
+}
+
+// Upload one avatar via the admin avatar routes: presign -> PUT -> register.
+async function uploadUserAvatar(baseUrl, apiKey, userId, fileBuffer, filename) {
   const filesize = fileBuffer.length;
-  const presign = await v1Call(apiUrl, token, orgId, 'POST', `/users/${userId}/avatar/upload-url`, {
+  const presign = await apiCall(baseUrl, apiKey, 'POST', `/users/${userId}/avatar/upload-url`, {
     mimeType: 'image/jpeg', originalFilename: filename, filesize,
   });
   const put = await fetch(presign.uploadUrl, { method: 'PUT', headers: presign.uploadHeaders, body: fileBuffer });
   if (!put.ok) throw new Error(`avatar PUT failed (${put.status})`);
-  const registered = await v1Call(apiUrl, token, orgId, 'POST', `/users/${userId}/avatar`, {
+  const registered = await apiCall(baseUrl, apiKey, 'POST', `/users/${userId}/avatar`, {
     prefix: presign.prefix, filename: presign.filename, mimeType: 'image/jpeg', filesize,
   });
   return registered?.mediaId ?? null;
@@ -184,57 +143,64 @@ function demoConfirmation(orgId, slug) {
   return `${orgId}:${slug}`;
 }
 
-// Count how many demo leads a branch already has (idempotency / plan).
-async function countSeededLeads(options, cookie, branchId) {
-  const res = await payloadCall(options.payloadUrl, cookie, 'GET',
-    `/leads?where[branch][equals]=${branchId}&where[sourceUrl][equals]=${DEMO_MARKER}&limit=0&depth=0`);
-  return res?.totalDocs || 0;
+/**
+ * The dedicated lead source every seeded lead is filed under. It is what makes
+ * re-runs idempotent: counting leads on it per branch is exact, where counting
+ * all leads in a branch would also count real ones. Created on first run.
+ */
+async function ensureDemoSource(baseUrl, apiKey, existingSources) {
+  const found = existingSources.find((s) => s.slug === DEMO_MARKER || s.name === DEMO_SOURCE_NAME);
+  if (found) return found;
+  const created = await apiCall(baseUrl, apiKey, 'POST', '/lead-sources', {
+    name: DEMO_SOURCE_NAME,
+    slug: DEMO_MARKER,
+    description: 'Sample leads created by the catalog generator. Safe to delete.',
+    isActive: true,
+  });
+  return created;
 }
 
 /**
- * Sign in as the org admin and resolve the live target (org id/name, branches,
- * lead statuses + sources). Shared by the dry run and the run so both see the
- * exact same org — the admin cookie is org-scoped, so this is authoritative.
+ * Resolve the live target with the service key: the org it is bound to, plus
+ * the branches, lead statuses and lead sources the seeder needs. Shared by the
+ * dry run and the run so both see the same org.
  */
 async function connectAndResolve(org, options) {
-  const auth = await authenticateAsUser({
-    supabaseUrl: options.supabaseUrl,
-    anonKey: options.anonKey,
-    email: options.adminEmail,
-    password: options.adminPassword,
-  });
-  // depth=2 populates configuration.baseConstants (where the branch address lives).
-  const branchesRes = await payloadCall(options.payloadUrl, auth.cookie, 'GET', '/branches?limit=100&depth=2');
-  const branches = branchesRes?.docs || [];
-  if (branches.length === 0) throw new Error('No branches visible to this admin — deploy the org first');
-  const orgRel = branches[0].organization;
-  const orgId = typeof orgRel === 'object' ? orgRel.id : orgRel;
-  const orgName = typeof orgRel === 'object' ? orgRel.name : null;
-  const statusesRes = await payloadCall(options.payloadUrl, auth.cookie, 'GET',
-    `/statuses?where[organization][equals]=${orgId}&where[type][equals]=lead&limit=50&depth=0`);
-  const leadStatuses = statusesRes?.docs || [];
-  const sourcesRes = await payloadCall(options.payloadUrl, auth.cookie, 'GET',
-    `/lead-sources?where[organization][equals]=${orgId}&limit=50&depth=0`);
-  const leadSources = sourcesRes?.docs || [];
-  return { auth, orgId, orgName, branches, leadStatuses, leadSources };
+  const { apiUrl, apiKey } = options;
+  const organization = await apiCall(apiUrl, apiKey, 'GET', '/organization/me');
+  const orgId = organization?.id;
+  if (!orgId) throw new Error('Could not resolve the organization from /v1/organization/me');
+
+  const branches = await listAll(apiUrl, apiKey, 'branches');
+  if (branches.length === 0) throw new Error('No branches visible to this API key — deploy the org first');
+  const leadStatuses = await listAll(apiUrl, apiKey, 'lead-statuses');
+  const leadSources = await listAll(apiUrl, apiKey, 'lead-sources');
+
+  return { orgId, orgName: organization?.name ?? null, branches, leadStatuses, leadSources };
 }
 
 /**
- * Dry run: authenticate, resolve the live org the admin is bound to, and report
- * what a populate would create (avatars available, leads per branch minus what's
- * already seeded) plus a `confirmation` token to echo back. Read-only.
+ * Dry run: resolve the live org the key is bound to and report what a populate
+ * would create (avatars available, leads per branch minus what is already
+ * seeded) plus a `confirmation` token to echo back. Read-only.
  */
 export async function planDemoData(org, options) {
-  const { auth, orgId, orgName, branches, leadStatuses, leadSources } = await connectAndResolve(org, options);
+  const { apiUrl, apiKey } = options;
+  const { orgId, orgName, branches, leadStatuses, leadSources } = await connectAndResolve(org, options);
   const leadsPerBranch = leadsPerBranchOf(options);
   const includeAvatars = options.includeAvatars !== false;
 
   const avatarsAvailable = (org.users || []).filter((u) => fs.existsSync(avatarFile(org.slug, u.email))).length;
 
+  // Read-only: if the demo source does not exist yet nothing has been seeded.
+  const demoSource = leadSources.find((s) => s.slug === DEMO_MARKER || s.name === DEMO_SOURCE_NAME) || null;
+
   const branchPlan = [];
   let leadsToCreate = 0;
   for (const branch of branches) {
-    const already = await countSeededLeads(options, auth.cookie, branch.id);
+    const already = demoSource
+      ? await countLeads(apiUrl, apiKey, { branch: String(branch.id), leadSource: String(demoSource.id) })
+      : 0;
     const willCreate = Math.max(0, leadsPerBranch - already);
     leadsToCreate += willCreate;
     branchPlan.push({ name: branch.name, already, willCreate });
@@ -245,10 +211,9 @@ export async function planDemoData(org, options) {
       id: orgId,
       name: orgName || org.name,
       slug: org.slug,
-      payloadUrl: options.payloadUrl,
+      apiUrl,
       branchCount: branches.length,
     },
-    actor: { email: auth.email },
     confirmation: demoConfirmation(orgId, org.slug),
     leadsPerBranch,
     avatars: { available: avatarsAvailable, willUpload: includeAvatars ? avatarsAvailable : 0 },
@@ -265,6 +230,7 @@ export async function planDemoData(org, options) {
  * aborts the run. Streams progress via `onStep` (same shape as deployOrg).
  */
 export async function seedDemoData(org, options, onStep) {
+  const { apiUrl, apiKey } = options;
   const log = [];
   const actions = [];
   function step(name, status, detail = '') {
@@ -281,14 +247,12 @@ export async function seedDemoData(org, options, onStep) {
   const includeAvatars = options.includeAvatars !== false;
 
   try {
-    step('auth', 'running', `Signing in as ${options.adminEmail}`);
-    const { auth, orgId, orgName, branches, leadStatuses, leadSources } = await connectAndResolve(org, options);
-    step('auth', 'done', `Authenticated as ${auth.email}`);
+    step('resolve', 'running');
+    const { orgId, orgName, branches, leadStatuses, leadSources } = await connectAndResolve(org, options);
 
     // Guard rail: the run must target the exact org the dry run confirmed. The
-    // admin cookie already scopes to one org, but echoing the confirmation token
-    // makes the operator's intent explicit (same contract as the deploy).
-    step('resolve', 'running');
+    // key already scopes to one org, but echoing the confirmation token makes
+    // the operator's intent explicit (same contract as the deploy).
     const expected = demoConfirmation(orgId, org.slug);
     if (options.confirmation && options.confirmation !== expected) {
       throw new Error(`Confirmation must match the resolved target "${expected}" (got "${options.confirmation}")`);
@@ -300,16 +264,18 @@ export async function seedDemoData(org, options, onStep) {
       step('avatars', 'running');
       let avatarCount = 0;
       const avatarFailures = [];
+      // One listing for the whole loop: the deploy just created these users.
+      const orgUsers = await listAll(apiUrl, apiKey, 'user-admins');
+      const userIdByEmail = new Map(
+        orgUsers.filter((u) => u.email).map((u) => [String(u.email).toLowerCase(), u.id]),
+      );
       for (const user of org.users || []) {
         const file = avatarFile(org.slug, user.email);
         if (!fs.existsSync(file)) continue;
         try {
-          // Resolve the Menaia user id by email (Payload Users collection).
-          const found = await payloadCall(options.payloadUrl, auth.cookie, 'GET',
-            `/users?where[email][equals]=${encodeURIComponent(user.email)}&limit=1&depth=0`);
-          const targetUserId = found?.docs?.[0]?.id;
+          const targetUserId = userIdByEmail.get(String(user.email).toLowerCase());
           if (!targetUserId) { avatarFailures.push(`${user.email}: user not found`); continue; }
-          const mediaId = await uploadUserAvatar(options.apiUrl, auth.accessToken, orgId, targetUserId, fs.readFileSync(file), `${userKey(user.email)}.jpg`);
+          const mediaId = await uploadUserAvatar(apiUrl, apiKey, targetUserId, fs.readFileSync(file), `${userKey(user.email)}.jpg`);
           action('user-avatars', 'created', user.email, mediaId);
           avatarCount += 1;
         } catch (err) {
@@ -329,20 +295,21 @@ export async function seedDemoData(org, options, onStep) {
 
     // ── Leads (with contacts), N per branch, addressed in the branch zone ───────
     step('leads', 'running');
+    const demoSource = await ensureDemoSource(apiUrl, apiKey, leadSources);
     let leadCount = 0;
     const leadFailures = [];
     let nameIdx = randInt(0, FIRST_NAMES.length - 1);
     for (const branch of branches) {
       // Idempotency: skip branches that already have our demo leads.
-      const existing = await payloadCall(options.payloadUrl, auth.cookie, 'GET',
-        `/leads?where[branch][equals]=${branch.id}&where[sourceUrl][equals]=${DEMO_MARKER}&limit=0&depth=0`);
-      const already = existing?.totalDocs || 0;
+      const already = await countLeads(apiUrl, apiKey, {
+        branch: String(branch.id),
+        leadSource: String(demoSource.id),
+      });
       if (already >= leadsPerBranch) {
         step('leads', 'running', `branch "${branch.name}" already seeded (${already}) — skipped`);
         continue;
       }
-      // Branch address lives on the configuration's baseConstants (Menaia /v1),
-      // falling back to a flat `address` if a future shape exposes one.
+      // Branch address lives on the configuration's baseConstants.
       const branchAddress = branch.configuration?.baseConstants?.address || branch.address;
       const loc = parseBranchLocation(branchAddress);
       for (let i = already; i < leadsPerBranch; i++) {
@@ -350,32 +317,34 @@ export async function seedDemoData(org, options, onStep) {
         const lastName = pick(LAST_NAMES, nameIdx * 3 + i);
         nameIdx += 1;
         const status = leadStatuses.length ? pick(leadStatuses, leadCount) : null; // round-robin → realistic board
-        const source = leadSources.length ? rand(leadSources) : null;
         try {
-          const contact = await payloadCall(options.payloadUrl, auth.cookie, 'POST', '/contacts', {
-            organization: orgId,
-            firstName,
-            lastName,
-            email: `${firstName}.${lastName}.${Date.now()}${i}@example.com`.toLowerCase(),
-            phone: `+1${randInt(200, 989)}${randInt(200, 989)}${String(randInt(0, 9999)).padStart(4, '0')}`,
-          });
-          const contactId = contact?.doc?.id;
-          const lead = await payloadCall(options.payloadUrl, auth.cookie, 'POST', '/leads', {
-            organization: orgId,
-            branch: branch.id,
-            primaryContact: contactId,
-            status: status?.id ?? undefined,
-            source: source?.id ?? undefined,
-            channel: 'manual-entry',
+          // `contacts` is part of the create body — no separate contact call.
+          const lead = await apiCall(apiUrl, apiKey, 'POST', '/leads', {
+            branchId: branch.id,
+            leadSourceId: demoSource.id,
+            contacts: [{
+              isPrimary: true,
+              firstName,
+              lastName,
+              email: `${firstName}.${lastName}.${Date.now()}${i}@example.com`.toLowerCase(),
+              phone: `+1${randInt(200, 989)}${randInt(200, 989)}${String(randInt(0, 9999)).padStart(4, '0')}`,
+            }],
             address: `${randInt(100, 9999)} ${rand(STREETS)}`,
             city: loc.city ?? undefined,
             state: loc.state ?? undefined,
             postalCode: loc.postalCode ?? undefined,
             notes: rand(LEAD_NOTES),
-            sourceUrl: DEMO_MARKER,
-            metadata: { demoSeed: true },
           });
-          action('leads', 'created', `${firstName} ${lastName} (${branch.name})`, lead?.doc?.id);
+          // Create always files a lead under the org's "new" status, so spread
+          // them across the pipeline afterwards. Non-fatal: the lead exists.
+          if (status?.id && lead?.id && lead.status?.id !== status.id) {
+            try {
+              await apiCall(apiUrl, apiKey, 'PATCH', `/leads/${lead.id}`, { status: status.id });
+            } catch (err) {
+              logger.warn(`[demo-data] status update failed for lead ${lead.id}: ${err.message}`);
+            }
+          }
+          action('leads', 'created', `${firstName} ${lastName} (${branch.name})`, lead?.id);
           leadCount += 1;
         } catch (err) {
           leadFailures.push(`${branch.name} #${i + 1}: ${err.message}`);

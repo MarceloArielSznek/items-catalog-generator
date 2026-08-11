@@ -256,5 +256,5 @@ The deployer never creates or deletes organizations. Generated users, vehicle te
 | Logo | Still manual or via the enrichment tool |
 | Item images | Via the enrichment tool after deployment |
 | Invoice automation config | Hardcoded defaults |
-| Demo job data | Not generated (clients, properties, jobs) |
+| Demo job data | Clients, properties and jobs are not generated; the demo-data step seeds user avatars + leads only |
 | `autoSendDepositInvoice` | Always `false` |
