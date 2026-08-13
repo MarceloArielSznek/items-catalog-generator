@@ -15,7 +15,7 @@ import { downloadImage, findBestImage, findImageCandidates } from '../services/i
 import { generateImage, getAvailableProviders } from '../services/imageProviders.js';
 import { removeBackground as imglyRemoveBackground } from '@imgly/background-removal-node';
 import env from '../config/env.js';
-import { getMenaiaApiUrl, getMenaiaApiKey, validateMenaiaConfig, getSupabaseUrl, getSupabaseAnonKey, getPayloadUrl, validateDemoDataConfig } from '../config/menaiaContext.js';
+import { getMenaiaApiUrl, getMenaiaApiKey, validateMenaiaConfig, getSupabaseUrl, getSupabaseAnonKey } from '../config/menaiaContext.js';
 import logger from '../utils/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1699,45 +1699,19 @@ router.post('/:slug/deploy', async (req, res) => {
   }
 });
 
-// Pick the admin to authenticate as for the demo-data step. Prefers Super Admin
-// / Admin (covers manage:User for avatars + BRANCH_MANAGEMENT for leads). Reads
-// the credentials persisted from the last deploy, falling back to the draft's
-// own users — their passwords are deterministic, so even when a re-deploy skips
-// creation with a 409 (and records nothing) we can still resolve the admin login.
-function resolveAdminCredentials(org) {
-  // Mirror the deploy's password padding (API requires >= 8 chars).
-  const pad = (p) => ((p || '').length >= 8 ? p : (p || 'Password').padEnd(8, '0'));
-  const fromCreds = org?.deployment?.credentials || [];
-  const fromDraft = (org?.users || []).map((u) => ({ email: u.email, password: pad(u.password), role: u.role }));
-  const pickAdmin = (pool) => {
-    const byRole = (re) => pool.find((c) => re.test(String(c.role || '')));
-    return byRole(/super\s*admin/i) || byRole(/^admin$/i) || byRole(/admin/i) || byRole(/sales\s*admin/i) || null;
-  };
-  const admin = pickAdmin(fromCreds) || pickAdmin(fromDraft);
-  return admin ? { email: admin.email, password: admin.password, role: admin.role } : null;
-}
-
-// Shared pre-flight for the demo-data endpoints: validate config + deploy state,
-// resolve the admin login, and assemble the service options. Returns either
-// `{ error }` (caller responds 400) or `{ options, admin }`.
+// Shared pre-flight for the demo-data endpoints: validate config + deploy state
+// and assemble the service options. Returns either `{ error }` (caller responds
+// 400) or `{ options }`. Demo data runs on the same org-bound service key as the
+// deploy, so there is no admin login to resolve.
 function demoDataPreflight(org, req) {
-  try { validateMenaiaConfig(); validateDemoDataConfig(); } catch (err) { return { error: err.message }; }
+  try { validateMenaiaConfig(); } catch (err) { return { error: err.message }; }
   if (!org.deployment?.lastDeployedAt) {
     return { error: 'Deploy the org before populating demo data' };
   }
-  const admin = resolveAdminCredentials(org);
-  if (!admin) {
-    return { error: 'No admin credentials on file — re-deploy to capture them' };
-  }
   return {
-    admin,
     options: {
       apiUrl: getMenaiaApiUrl(),
-      supabaseUrl: getSupabaseUrl(),
-      anonKey: getSupabaseAnonKey(),
-      payloadUrl: getPayloadUrl(),
-      adminEmail: admin.email,
-      adminPassword: admin.password,
+      apiKey: getMenaiaApiKey(),
       leadsPerBranch: Number(req.body?.leadsPerBranch) || 5,
       includeAvatars: req.body?.includeAvatars !== false,
       confirmation: req.body?.confirmation,
@@ -1754,7 +1728,7 @@ router.post('/:slug/deploy/demo-data/plan', async (req, res) => {
   const pre = demoDataPreflight(org, req);
   if (pre.error) return res.status(400).json({ success: false, error: pre.error });
   try {
-    logger.info(`Planning demo data for ${org.slug} as ${pre.admin.email} (${pre.admin.role})`);
+    logger.info(`Planning demo data for ${org.slug} at ${getMenaiaApiUrl()}`);
     const plan = await planDemoData(org, pre.options);
     res.json({ success: true, data: plan });
   } catch (err) {
@@ -1762,11 +1736,10 @@ router.post('/:slug/deploy/demo-data/plan', async (req, res) => {
   }
 });
 
-// POST /api/orgs/:slug/deploy/demo-data — post-deploy population. Authenticates
-// as a real org admin (Supabase password grant) and seeds user avatars + N demo
-// leads per branch via the Payload REST + NestJS avatar APIs (which the service
-// key can't reach). Requires the confirmation token from the dry run. Streams
-// progress as SSE, same shape as /deploy.
+// POST /api/orgs/:slug/deploy/demo-data — post-deploy population. Seeds user
+// avatars + N demo leads per branch through the Menaia `/v1` API with the same
+// service key the deploy uses. Requires the confirmation token from the dry run.
+// Streams progress as SSE, same shape as /deploy.
 router.post('/:slug/deploy/demo-data', async (req, res) => {
   const org = getOrg(req.params.slug);
   if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
@@ -1782,7 +1755,7 @@ router.post('/:slug/deploy/demo-data', async (req, res) => {
   const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
   try {
-    logger.info(`Populating demo data for ${org.slug} as ${pre.admin.email} (${pre.admin.role})`);
+    logger.info(`Populating demo data for ${org.slug} at ${getMenaiaApiUrl()}`);
     const result = await seedDemoData(org, pre.options, (entry) => send({ type: 'step', entry }));
     send({ type: 'done', result });
     res.end();

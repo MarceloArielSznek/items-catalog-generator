@@ -1052,9 +1052,9 @@ export async function deployOrg(org, options, onStep) {
       // draft now holds the real name, this PATCH is what syncs it into Menaia.
       // Non-fatal: log + continue on failure.
       //
-      // NOTE: user AVATARS are still not deployed here (the service key gets 401
-      // on the SupabaseJwtGuard'd avatar route); they're populated post-deploy by
-      // demoDataService via a real-user JWT. See memory: project-supabase-seed-path.
+      // Avatars are deployed by the demo-data step rather than here, so a deploy
+      // stays a pure catalog/settings operation and re-running it doesn't reupload
+      // every image. Both paths use the same admin avatar routes.
       if (userId && (user.name || user.about)) {
         const patch = {};
         if (user.name) patch.name = user.name;

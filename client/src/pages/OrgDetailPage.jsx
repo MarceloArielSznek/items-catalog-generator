@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { getOrg, deleteOrg, deployOrg, planOrgDeployment, seedDemoData, planDemoData, generateOrgLogo, setLogoPlaceholder, cloneToReal, addWorkArea, generateWorkAreaCatalog, getVideoProviders, listOrgVideos, generateOrgVideo, previewOrgVideoPrompt, deleteOrgVideo } from "../services/orgApi.js";
-import { getMenaiaSettings, hasMenaiaSettings, hasDemoDataSettings } from "../services/menaiaSettings.js";
+import { getMenaiaSettings, hasMenaiaSettings, hasAdminAuthSettings } from "../services/menaiaSettings.js";
 
 function StatBadge({ label, value }) {
   return (
@@ -793,7 +793,7 @@ function DeploySection({ slug, status, onDeployed }) {
   // Credentials come from the Settings page (browser → request headers), so the
   // deploy flow no longer prompts for them.
   const configured = hasMenaiaSettings();
-  const demoConfigured = hasDemoDataSettings();
+  const adminAuthConfigured = hasAdminAuthSettings();
   const { url: menaiaUrl } = getMenaiaSettings();
   // Demo data can run once the org has been deployed (this session or earlier).
   const deployed = status === "deployed" || result?.success;
@@ -945,7 +945,7 @@ function DeploySection({ slug, status, onDeployed }) {
         <button
           className="btn btn--deploy"
           onClick={handlePlan}
-          disabled={planning || deploying || (deployMode === "user" ? !(adminEmail.trim() && adminPassword && demoConfigured) : !configured)}
+          disabled={planning || deploying || (deployMode === "user" ? !(adminEmail.trim() && adminPassword && adminAuthConfigured) : !configured)}
         >
           {planning ? "Checking target…" : "Check target and dry run"}
         </button>
@@ -1049,12 +1049,6 @@ function DeploySection({ slug, status, onDeployed }) {
               Deploy the org first — demo data is populated into the deployed organization.
             </div>
           )}
-          {deployed && !demoConfigured && (
-            <div className="deploy-panel__note deploy-panel__note--warn">
-              Add the Supabase URL, anon key, and Payload URL in <Link to="/settings">Settings → Demo Data</Link> first.
-            </div>
-          )}
-
           <div className="deploy-demo__controls">
             <label className="form-label deploy-demo__field">
               Leads per branch
@@ -1082,7 +1076,7 @@ function DeploySection({ slug, status, onDeployed }) {
           <button
             className="btn btn--deploy"
             onClick={handleSeedPlan}
-            disabled={seedPlanning || seeding || !deployed || !demoConfigured}
+            disabled={seedPlanning || seeding || !deployed || !configured}
           >
             {seedPlanning ? "Checking target…" : "Check target and dry run"}
           </button>

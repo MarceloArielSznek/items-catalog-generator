@@ -34,15 +34,12 @@ const env = {
   MENAIA_API_KEY: process.env.MENAIA_API_KEY || "",
   MENAIA_TIMEOUT: parseInt(process.env.API_TIMEOUT_MS, 10) || 15000,
 
-  // Demo-data population (post-deploy): real-user auth via Supabase password
-  // grant unlocks the Payload REST API (leads/contacts) + NestJS avatar routes
-  // the service key can't reach. Browser-configured (Settings → `x-supabase-*`
-  // / `x-payload-*` headers); these env values are only a non-browser fallback.
+  // Optional "Admin user (JWT)" deploy mode: real-user auth via the Supabase
+  // password grant, for when a service key can't run the whole deploy.
+  // Browser-configured (Settings → `x-supabase-*` headers); these env values
+  // are only a non-browser fallback.
   SUPABASE_URL: (process.env.SUPABASE_URL || "").replace(/\/+$/, ""),
   SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || "",
-  // Payload/Next web host (serves `/api/<collection>`). Distinct from the NestJS
-  // `/v1` host. Defaults to the Menaia API URL when unset (same host in prod).
-  PAYLOAD_URL: (process.env.PAYLOAD_URL || "").replace(/\/+$/, ""),
 
   // Image search (Serper.dev)
   SERPER_API_KEY: process.env.SERPER_API_KEY || "",
