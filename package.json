@@ -6,8 +6,11 @@
   "description": "Internal catalog image composer for Attic Projects",
   "scripts": {
     "server": "npm run dev --prefix server",
+    "server:stable": "npm start --prefix server",
     "client": "npm run dev --prefix client",
-    "dev": "concurrently \"npm run server\" \"npm run client\""
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "dev:stable": "concurrently \"npm run server:stable\" \"npm run client\"",
+    "build": "npm run build --prefix client"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

@@ -5,11 +5,16 @@ import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import env from "./config/env.js";
+import { menaiaContextMiddleware } from "./config/menaiaContext.js";
 import imageRoutes from "./routes/imageRoutes.js";
 import sceneRoutes from "./routes/sceneRoutes.js";
 import downloadRoutes from "./routes/downloadRoutes.js";
 import libraryRoutes from "./routes/libraryRoutes.js";
 import payloadRoutes from "./routes/payloadRoutes.js";
+import enrichmentRoutes from "./routes/enrichmentRoutes.js";
+import seedRoutes from "./routes/seedRoutes.js";
+import orgRoutes from "./routes/orgRoutes.js";
+import videoRoutes from "./routes/videoRoutes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -46,14 +51,30 @@ if (env.IS_PRODUCTION) {
 
 app.use(express.json());
 
+// Resolve per-request Menaia credentials (sent by the browser) for all routes.
+app.use(menaiaContextMiddleware);
+
 app.use("/generated", express.static(env.GENERATED_DIR));
 app.use("/scenes", express.static(env.SCENES_DIR));
+app.use("/pre-generated", express.static(path.resolve(__dirname, "pre-generated")));
 
-app.use("/api", imageRoutes);
-app.use("/api/scenes", sceneRoutes);
-app.use("/api", downloadRoutes);
-app.use("/api/library", libraryRoutes);
-app.use("/api/payload", payloadRoutes);
+// ── Org generator (always mounted — this is the product that ships) ──────────
+app.use("/api/seed", seedRoutes);
+// videoRoutes first: its specific paths (e.g. /video-providers) must win before
+// orgRoutes' catch-all GET /:slug treats them as an org slug.
+app.use("/api/orgs", videoRoutes);
+app.use("/api/orgs", orgRoutes);
+
+// ── Legacy item generator (compose / scenes / library / payload / enrich) ────
+// Unmounted in production; kept for dev. Toggle via ENABLE_ITEM_GENERATOR.
+if (env.ENABLE_ITEM_GENERATOR) {
+  app.use("/api", imageRoutes);
+  app.use("/api/scenes", sceneRoutes);
+  app.use("/api", downloadRoutes);
+  app.use("/api/library", libraryRoutes);
+  app.use("/api/payload", payloadRoutes);
+  app.use("/api/enrich", enrichmentRoutes);
+}
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });

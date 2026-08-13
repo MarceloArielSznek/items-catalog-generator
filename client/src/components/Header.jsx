@@ -1,41 +1,28 @@
-import { NavLink, useNavigate } from "react-router-dom";
-import { clearToken, getStoredToken } from "../services/payloadAuth.js";
+import { NavLink } from "react-router-dom";
+import { ITEM_GENERATOR_ENABLED } from "../featureFlags.js";
 
 export default function Header() {
-  const navigate = useNavigate();
-  const hasPayloadSession = Boolean(getStoredToken());
-
-  const handleSignOut = () => {
-    clearToken();
-    if (import.meta.env.PROD) {
-      navigate("/login", { replace: true });
-    }
-  };
-
   return (
     <header className="header">
       <div className="header__brand">
-        <div className="header__logo">AP</div>
-        <h1 className="header__title">Catalog Composer</h1>
+        <div className="header__logo">OG</div>
+        <div className="header__brand-text">
+          <span className="header__title">Org Generator</span>
+          <span className="header__subtitle">by Menaia</span>
+        </div>
       </div>
       <nav className="header__nav">
-        <NavLink to="/items" className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
-          Items
-        </NavLink>
         <NavLink to="/" end className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
-          Scenes
+          Orgs
         </NavLink>
-        <NavLink to="/service-photos" className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
-          Service Photos
+        {ITEM_GENERATOR_ENABLED && (
+          <NavLink to="/items" className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
+            Price Book
+          </NavLink>
+        )}
+        <NavLink to="/settings" className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
+          Settings
         </NavLink>
-        <NavLink to="/library" className={({ isActive }) => `header__link ${isActive ? "header__link--active" : ""}`}>
-          Library
-        </NavLink>
-        {hasPayloadSession ? (
-          <button type="button" className="header__link btn btn--ghost btn--sm" onClick={handleSignOut}>
-            Sign out
-          </button>
-        ) : null}
       </nav>
     </header>
   );

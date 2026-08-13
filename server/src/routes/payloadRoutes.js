@@ -5,7 +5,7 @@ import env from "../config/env.js";
 import SmartStorage from "../middleware/smartStorage.js";
 import { isAllowedMediaMimeType } from "../utils/fileValidation.js";
 import {
-  loginWithCredentials,
+  probeMenaiaAuth,
   getWorkAreas,
   getWorkArea,
   createWorkArea,
@@ -21,39 +21,15 @@ import {
   getAllItems,
   getItem,
   updateItem,
-  uploadMedia,
-  attachMediaToItem,
+  uploadItemMedia,
   detachMediaFromItem,
   getFactors,
   getAdditionalCosts,
   getOrganizations,
 } from "../services/payloadService.js";
-import { payloadRequestContextMiddleware } from "../middleware/payloadRequestContext.js";
 import { SMART_STORAGE_THRESHOLD_MB } from "../../../shared/constants/imageRules.js";
 
 const router = Router();
-
-/** Same as form-builder: client posts Payload credentials, receives JWT for sessionStorage. */
-router.post("/auth/login", async (req, res, next) => {
-  try {
-    const email = req.body?.email;
-    const password = req.body?.password;
-    if (!email || !password) {
-      return res.status(400).json({ success: false, error: "Email and password are required" });
-    }
-    const data = await loginWithCredentials(email, password);
-    res.json({
-      success: true,
-      token: data.token,
-      exp: data.exp,
-      user: data.user,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.use(payloadRequestContextMiddleware);
 
 const mediaUpload = multer({
   storage: new SmartStorage({
@@ -66,9 +42,18 @@ const mediaUpload = multer({
   limits: { fileSize: env.MAX_MEDIA_SIZE_BYTES },
 });
 
-router.get("/work-areas", async (_req, res, next) => {
+router.get("/session", async (_req, res, next) => {
   try {
-    const workAreas = await getWorkAreas();
+    res.json({ success: true, data: await probeMenaiaAuth() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/work-areas", async (req, res, next) => {
+  try {
+    const orgId = req.query.orgId || null;
+    const workAreas = await getWorkAreas(orgId);
     res.json({ success: true, data: workAreas });
   } catch (err) {
     next(err);
@@ -120,9 +105,10 @@ router.get("/work-areas/:id/categories", async (req, res, next) => {
   }
 });
 
-router.get("/categories", async (_req, res, next) => {
+router.get("/categories", async (req, res, next) => {
   try {
-    const categories = await getCategories();
+    const orgId = req.query.orgId || null;
+    const categories = await getCategories(orgId);
     res.json({ success: true, data: categories });
   } catch (err) {
     next(err);
@@ -240,19 +226,22 @@ router.post("/items/:id/media", mediaUpload.single("file"), async (req, res, nex
       if (file.path) await fs.unlink(file.path).catch(() => {});
     }
 
-    const mediaDoc = await uploadMedia(buffer, file.originalname, file.mimetype);
-    const mediaId = mediaDoc?.id;
+    const { mediaId, publicUrl } = await uploadItemMedia(
+      req.params.id,
+      buffer,
+      file.originalname,
+      file.mimetype,
+    );
     if (!mediaId) {
       return res.status(500).json({ success: false, error: "Upload succeeded but media ID was not returned" });
     }
 
-    await attachMediaToItem(req.params.id, mediaId);
     res.json({
       success: true,
       data: {
         mediaId,
-        mediaUrl: mediaDoc?.url || "",
-        filename: mediaDoc?.filename || file.originalname,
+        mediaUrl: publicUrl || "",
+        filename: file.originalname,
       },
     });
   } catch (err) {

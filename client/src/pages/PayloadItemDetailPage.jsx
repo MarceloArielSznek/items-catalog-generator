@@ -1,18 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { fetchItem, updatePayloadItem, uploadItemMedia, detachItemMedia, invalidatePayloadCache, fetchFactors, fetchAdditionalCosts } from "../services/payloadApi.js";
-import { listScenes, generateWithScene, removeBackground, processServiceImage } from "../services/api.js";
 import RichTextEditor from "../components/RichTextEditor.jsx";
 import { htmlToMarkdown, markdownToHtml, looksLikeHtml } from "../utils/markdownPayload.js";
-import ItemPreviewComposite from "../components/ItemPreviewComposite.jsx";
-import ModeSelector from "../components/ModeSelector.jsx";
-import FormatSelector from "../components/FormatSelector.jsx";
-import LogoPositionGrid from "../components/LogoPositionGrid.jsx";
-import { validateImageFile, validateMediaFile, createPreviewUrl, revokePreviewUrl, isVideoFile } from "../utils/fileHelpers.js";
-import { COMPOSITION_DEFAULTS, LIGHTING_DEFAULTS } from "../../../shared/constants/imageRules.js";
-import config from "../config.js";
+import { validateMediaFile } from "../utils/fileHelpers.js";
 
-const PAYLOAD_BASE = "https://www.attic-tech.com";
+const PAYLOAD_BASE = "https://pr-819.preview.menaia.com";
 
 const UNIT_OPTIONS = [
   "",
@@ -50,30 +43,7 @@ function extractMediaList(item) {
     }));
 }
 
-async function fetchGeneratedFile(imageUrl, filename) {
-  const url = imageUrl.startsWith("http") ? imageUrl : `${config.API_BASE_URL}/../${imageUrl.replace(/^\//, "")}`;
-  const res = await fetch(url);
-  const blob = await res.blob();
-  return new File([blob], filename || "generated.png", { type: blob.type });
-}
-
-function LightingSlider({ label, value, min, max, step, onChange }) {
-  return (
-    <div className="service-lighting__slider">
-      <label>{label}: <strong>{value.toFixed(2)}</strong></label>
-      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(parseFloat(e.target.value))} />
-    </div>
-  );
-}
-
-function buildCssFilter(lighting) {
-  let f = `brightness(${lighting.brightness}) contrast(${lighting.contrast}) saturate(${lighting.saturation})`;
-  if (lighting.warmth > 0) f += ` sepia(${lighting.warmth * 0.25})`;
-  if (lighting.warmth < 0) f += ` hue-rotate(${lighting.warmth * 15}deg)`;
-  return f;
-}
-
-export default function PayloadItemDetailPage({ isModal = false }) {
+export default function PayloadItemDetailPage({ isModal = false, orgId = null, orgName = "" }) {
   const { itemId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -93,7 +63,6 @@ export default function PayloadItemDetailPage({ isModal = false }) {
   const [requiresInfo, setRequiresInfo] = useState(false);
   const [factors, setFactors] = useState([]);
   const [additionalCosts, setAdditionalCosts] = useState([]);
-  const [additionalCostIdToAdd, setAdditionalCostIdToAdd] = useState("");
   const [factorsOptions, setFactorsOptions] = useState([]);
   const [additionalCostsOptions, setAdditionalCostsOptions] = useState([]);
   const [extraFields, setExtraFields] = useState({});
@@ -104,43 +73,7 @@ export default function PayloadItemDetailPage({ isModal = false }) {
   const [mediaList, setMediaList] = useState([]);
   const [selectedMedia, setSelectedMedia] = useState(0);
   const [uploading, setUploading] = useState(false);
-
   const [detaching, setDetaching] = useState(null);
-
-  // ── Catalog generator state ──
-  const [scenes, setScenes] = useState([]);
-  const [showGenerator, setShowGenerator] = useState(false);
-  const [selectedSceneId, setSelectedSceneId] = useState("");
-  const [selectedScene, setSelectedScene] = useState(null);
-  const [genItemFile, setGenItemFile] = useState(null);
-  const [genItemPreview, setGenItemPreview] = useState(null);
-  const [transparentUrl, setTransparentUrl] = useState(null);
-  const [removingBg, setRemovingBg] = useState(false);
-  const [itemScale, setItemScale] = useState(COMPOSITION_DEFAULTS.itemScale);
-  const [shadowIntensity, setShadowIntensity] = useState(1);
-  const [genMode, setGenMode] = useState("quick");
-  const [genFormat, setGenFormat] = useState("square");
-  const [genInstruction, setGenInstruction] = useState("");
-  const [generating, setGenerating] = useState(false);
-  const [genResult, setGenResult] = useState(null);
-  const [uploadingGen, setUploadingGen] = useState(false);
-  const genItemRef = useRef(null);
-
-  // ── Service photo state ──
-  const [showService, setShowService] = useState(false);
-  const [svcLogoFile, setSvcLogoFile] = useState(null);
-  const [svcLogoPreview, setSvcLogoPreview] = useState(null);
-  const [svcPhotoFile, setSvcPhotoFile] = useState(null);
-  const [svcPhotoPreview, setSvcPhotoPreview] = useState(null);
-  const [svcLogoPosition, setSvcLogoPosition] = useState("bottom-right");
-  const [svcLogoScale, setSvcLogoScale] = useState(COMPOSITION_DEFAULTS.logoScale);
-  const [svcFormat, setSvcFormat] = useState("square");
-  const [svcLighting, setSvcLighting] = useState({ ...LIGHTING_DEFAULTS });
-  const [svcProcessing, setSvcProcessing] = useState(false);
-  const [svcResult, setSvcResult] = useState(null);
-  const [uploadingSvc, setUploadingSvc] = useState(false);
-  const svcPhotoRef = useRef(null);
-  const svcLogoRef = useRef(null);
 
   const RESERVED_ITEM_KEYS = new Set([
     "id", "name", "itemInfo", "category", "media", "createdAt", "updatedAt",
@@ -163,7 +96,6 @@ export default function PayloadItemDetailPage({ isModal = false }) {
     return out;
   }
 
-  // ── Load item ──
   const loadItem = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -181,9 +113,7 @@ export default function PayloadItemDetailPage({ isModal = false }) {
       setSubItem(!!data.subItem);
       setRequiresInfo(!!data.requiresInfo);
       const fac = data.factors;
-      const facList = fac == null ? [] : Array.isArray(fac)
-        ? fac
-        : [fac];
+      const facList = fac == null ? [] : Array.isArray(fac) ? fac : [fac];
       setFactors(facList.map((entry) => {
         if (entry == null) return { id: null, label: "" };
         if (typeof entry === "object" && "id" in entry) {
@@ -219,15 +149,6 @@ export default function PayloadItemDetailPage({ isModal = false }) {
   useEffect(() => {
     (async () => {
       try {
-        const res = await listScenes();
-        setScenes(res.data || []);
-      } catch { /* not critical */ }
-    })();
-  }, []);
-
-  useEffect(() => {
-    (async () => {
-      try {
         const list = await fetchFactors();
         setFactorsOptions(Array.isArray(list) ? list : []);
       } catch { /* not critical */ }
@@ -243,16 +164,11 @@ export default function PayloadItemDetailPage({ isModal = false }) {
     })();
   }, []);
 
-  useEffect(() => {
-    setSelectedScene(selectedSceneId ? scenes.find((s) => s.id === selectedSceneId) || null : null);
-  }, [selectedSceneId, scenes]);
-
   const showSaved = (msg) => {
     setSavedMsg(msg);
     setTimeout(() => setSavedMsg(""), 3000);
   };
 
-  // ── Item data save ──
   const handleSave = async () => {
     setSaving(true);
     setSavedMsg("");
@@ -291,7 +207,6 @@ export default function PayloadItemDetailPage({ isModal = false }) {
     return key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase()).trim();
   }
 
-  // ── Direct image upload ──
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -311,7 +226,6 @@ export default function PayloadItemDetailPage({ isModal = false }) {
     }
   };
 
-  // ── Detach image from item ──
   const handleDetachMedia = async (mediaId) => {
     if (!confirm("Remove this image from the item? (The image won't be deleted from the system)")) return;
     setDetaching(mediaId);
@@ -325,158 +239,6 @@ export default function PayloadItemDetailPage({ isModal = false }) {
     finally { setDetaching(null); }
   };
 
-  // ── Upload any generated image to Payload ──
-  const uploadGeneratedToPayload = async (imageUrl, filename) => {
-    const file = await fetchGeneratedFile(imageUrl, filename);
-    await uploadItemMedia(itemId, file);
-    const categoryId = item?.category?.id ?? item?.category;
-    if (categoryId != null) invalidatePayloadCache(categoryId);
-    await loadItem();
-    showSaved("Image uploaded to Payload");
-  };
-
-  // ══════════════════════════════════════
-  // CATALOG GENERATOR
-  // ══════════════════════════════════════
-
-  const handleGenItemSelect = useCallback(async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const err = validateImageFile(file);
-    if (err) { setError(err); return; }
-    setError(null);
-    if (genItemPreview) revokePreviewUrl(genItemPreview);
-    setGenItemFile(file);
-    setGenItemPreview(createPreviewUrl(file));
-    setTransparentUrl(null);
-    setGenResult(null);
-    setItemScale(COMPOSITION_DEFAULTS.itemScale);
-    e.target.value = "";
-
-    setRemovingBg(true);
-    try {
-      const res = await removeBackground(file);
-      setTransparentUrl(res.data.imageUrl);
-    } catch (bgErr) {
-      setError("Background removal failed: " + bgErr.message);
-    } finally {
-      setRemovingBg(false);
-    }
-  }, [genItemPreview]);
-
-  const handleGenerate = async () => {
-    if (!genItemFile || !selectedSceneId) return;
-    setGenerating(true);
-    setError(null);
-    setGenResult(null);
-    try {
-      const res = await generateWithScene({
-        sceneId: selectedSceneId,
-        item: genItemFile,
-        itemName: name,
-        instruction: genInstruction,
-        logoPosition: selectedScene?.logoPosition,
-        mode: genMode,
-        format: genFormat,
-        itemScale,
-        shadowIntensity,
-      });
-      setGenResult(res.data);
-    } catch (err) { setError(err.message); }
-    finally { setGenerating(false); }
-  };
-
-  const handleUploadGenerated = async () => {
-    if (!genResult?.imageUrl) return;
-    setUploadingGen(true);
-    setError(null);
-    try {
-      await uploadGeneratedToPayload(genResult.imageUrl, genResult.filename);
-      setGenResult(null);
-    } catch (err) { setError(err.message); }
-    finally { setUploadingGen(false); }
-  };
-
-  const resetGenerator = () => {
-    if (genItemPreview) revokePreviewUrl(genItemPreview);
-    setGenItemFile(null);
-    setGenItemPreview(null);
-    setTransparentUrl(null);
-    setGenResult(null);
-    setItemScale(COMPOSITION_DEFAULTS.itemScale);
-    setShadowIntensity(1);
-    setGenInstruction("");
-  };
-
-  // ══════════════════════════════════════
-  // SERVICE PHOTO GENERATOR
-  // ══════════════════════════════════════
-
-  const handleSvcLogoSelect = useCallback((e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const err = validateImageFile(file);
-    if (err) { setError(err); return; }
-    if (svcLogoPreview) revokePreviewUrl(svcLogoPreview);
-    setSvcLogoFile(file);
-    setSvcLogoPreview(createPreviewUrl(file));
-    e.target.value = "";
-  }, [svcLogoPreview]);
-
-  const handleSvcPhotoSelect = useCallback((e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const err = validateImageFile(file);
-    if (err) { setError(err); return; }
-    if (svcPhotoPreview) revokePreviewUrl(svcPhotoPreview);
-    setSvcPhotoFile(file);
-    setSvcPhotoPreview(createPreviewUrl(file));
-    setSvcResult(null);
-    e.target.value = "";
-  }, [svcPhotoPreview]);
-
-  const handleSvcProcess = async () => {
-    if (!svcPhotoFile || !svcLogoFile) return;
-    setSvcProcessing(true);
-    setError(null);
-    try {
-      const res = await processServiceImage({
-        photo: svcPhotoFile,
-        logo: svcLogoFile,
-        format: svcFormat,
-        lighting: svcLighting,
-        logoPosition: svcLogoPosition,
-        logoScale: svcLogoScale,
-      });
-      setSvcResult(res.data);
-    } catch (err) { setError(err.message); }
-    finally { setSvcProcessing(false); }
-  };
-
-  const handleUploadSvc = async () => {
-    if (!svcResult?.imageUrl) return;
-    setUploadingSvc(true);
-    setError(null);
-    try {
-      await uploadGeneratedToPayload(svcResult.imageUrl, svcResult.filename);
-      setSvcResult(null);
-    } catch (err) { setError(err.message); }
-    finally { setUploadingSvc(false); }
-  };
-
-  const updateSvcLighting = useCallback((key, val) => {
-    setSvcLighting((prev) => ({ ...prev, [key]: val }));
-  }, []);
-
-  const resetService = () => {
-    if (svcPhotoPreview) revokePreviewUrl(svcPhotoPreview);
-    setSvcPhotoFile(null);
-    setSvcPhotoPreview(null);
-    setSvcResult(null);
-    setSvcLighting({ ...LIGHTING_DEFAULTS });
-  };
-
-  // ── Render guards ──
   if (loading) return <main className="page"><p>Loading item...</p></main>;
 
   if (error && !item) {
@@ -497,12 +259,242 @@ export default function PayloadItemDetailPage({ isModal = false }) {
   const currentImage = currentMedia?.url || null;
   const currentIsVideo = currentMedia?.isVideo || false;
   const categoryName = item?.category?.title || item?.category?.name || "";
-  const svcCssFilter = buildCssFilter(svcLighting);
+
+  // ── Image gallery panel (right side) ──
+  const imagePanel = (
+    <>
+      <div className="idf__live-preview">
+        {currentImage ? (
+          currentIsVideo ? (
+            <video
+              src={currentImage}
+              className="idf__live-preview__img"
+              controls
+            />
+          ) : (
+            <img
+              className="idf__live-preview__img"
+              src={currentImage}
+              alt={name || "Item"}
+            />
+          )
+        ) : (
+          <div className="ew-preview__empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" width="48" height="48">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M6.75 21h10.5A2.25 2.25 0 0019.5 18.75V6.75A2.25 2.25 0 0017.25 4.5H6.75A2.25 2.25 0 004.5 6.75v12A2.25 2.25 0 006.75 21z" />
+            </svg>
+            <p>No image yet</p>
+          </div>
+        )}
+
+        <button className="idf__live-upload-btn" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+          <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+            <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" />
+          </svg>
+          {uploading ? "Uploading…" : "Upload Image"}
+        </button>
+        <input ref={fileInputRef} type="file" accept="image/*,video/*" style={{ display: "none" }} onChange={handleUpload} />
+      </div>
+
+      {mediaList.length > 1 && (
+        <div className="idf__thumbstrip">
+          {mediaList.map((m, i) => (
+            <div key={m.id || i} className="idf__thumb-wrap">
+              {m.isVideo ? (
+                <div
+                  className={`idf__thumb--video ${selectedMedia === i ? "idf__thumb--active" : ""}`}
+                  onClick={() => setSelectedMedia(i)}
+                >▶</div>
+              ) : (
+                <img
+                  className={`idf__thumb ${selectedMedia === i ? "idf__thumb--active" : ""}`}
+                  src={m.thumbUrl}
+                  alt=""
+                  onClick={() => setSelectedMedia(i)}
+                  onError={(e) => { e.target.src = m.url; }}
+                />
+              )}
+              <button
+                className="idf__thumb-remove"
+                onClick={() => handleDetachMedia(m.id)}
+                disabled={detaching === m.id}
+                title="Remove image"
+              >×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+
+  // ── Form sections ──
+  const formSections = (
+    <div className="idf">
+
+      <div className="idf__section">
+        <label className="idf__label">Description</label>
+        <RichTextEditor content={description} onChange={(html) => { setDescription(html); setDirty(true); }} />
+      </div>
+
+      <div className="idf__section">
+        <p className="idf__section-title">Pricing</p>
+        <div className="idf__grid2">
+          <div>
+            <label className="idf__label">Material Cost</label>
+            <div className="idf__input-wrap idf__input-wrap--prefix">
+              <span className="idf__prefix">$</span>
+              <input className="idf__input" type="number" step="any" min="0" value={materialCost} placeholder="0.00"
+                onChange={(e) => { setMaterialCost(e.target.value); setDirty(true); }} />
+            </div>
+          </div>
+          <div>
+            <label className="idf__label">Labor Hours</label>
+            <input className="idf__input" type="number" step="any" min="0" value={laborHours} placeholder="0"
+              onChange={(e) => { setLaborHours(e.target.value); setDirty(true); }} />
+          </div>
+          <div>
+            <label className="idf__label">Unit</label>
+            <select className="idf__input idf__select" value={unit}
+              onChange={(e) => { setUnit(e.target.value); setDirty(true); }}>
+              {UNIT_OPTIONS.map((opt) => (
+                <option key={opt || "__empty__"} value={opt}>{opt || "— Select —"}</option>
+              ))}
+              {unit && !UNIT_OPTIONS.includes(unit) && <option value={unit}>{unit}</option>}
+            </select>
+          </div>
+          <div>
+            <label className="idf__label">Multiplier Override</label>
+            <input className="idf__input" type="number" step="any" value={multiplierOverride} placeholder="—"
+              onChange={(e) => { setMultiplierOverride(e.target.value); setDirty(true); }} />
+          </div>
+        </div>
+      </div>
+
+      <div className="idf__section">
+        <p className="idf__section-title">Flags</p>
+        <div className="idf__toggles">
+          <label className="idf__toggle">
+            <span className="idf__toggle-track">
+              <input type="checkbox" checked={subItem} onChange={(e) => { setSubItem(e.target.checked); setDirty(true); }} />
+              <span className="idf__toggle-thumb" />
+            </span>
+            <span className="idf__toggle-label">Sub Item</span>
+          </label>
+          <label className="idf__toggle">
+            <span className="idf__toggle-track">
+              <input type="checkbox" checked={requiresInfo} onChange={(e) => { setRequiresInfo(e.target.checked); setDirty(true); }} />
+              <span className="idf__toggle-thumb" />
+            </span>
+            <span className="idf__toggle-label">Requires Info</span>
+          </label>
+        </div>
+      </div>
+
+      {(factors.length > 0 || factorsOptions.length > 0) && (
+        <div className="idf__section">
+          <p className="idf__section-title">Factors</p>
+          <div className="idf__chips">
+            {factors.map((f) => (
+              <span key={f.id} className="idf__chip">
+                {f.label}
+                <button type="button" className="idf__chip-remove"
+                  onClick={() => { setFactors((prev) => prev.filter((x) => x.id !== f.id)); setDirty(true); }}>×</button>
+              </span>
+            ))}
+          </div>
+          {factorsOptions.length > 0 && (
+            <select className="idf__input idf__select idf__select--add" value=""
+              onChange={(e) => {
+                const id = e.target.value === "" ? null : Number(e.target.value);
+                e.target.value = "";
+                if (id != null && !factors.some((c) => c.id === id)) {
+                  const opt = factorsOptions.find((a) => a.id === id);
+                  setFactors((prev) => [...prev, { id, label: opt ? opt.label : `ID: ${id}` }]);
+                  setDirty(true);
+                }
+              }}>
+              <option value="">+ Add factor…</option>
+              {factorsOptions.filter((a) => !factors.some((c) => c.id === a.id)).map((a) => (
+                <option key={a.id} value={a.id}>{a.label}</option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+
+      {(additionalCosts.length > 0 || additionalCostsOptions.length > 0) && (
+        <div className="idf__section">
+          <p className="idf__section-title">Additional Costs</p>
+          <div className="idf__chips">
+            {additionalCosts.map((c) => (
+              <span key={c.id} className="idf__chip idf__chip--cost">
+                {c.label}
+                <button type="button" className="idf__chip-remove"
+                  onClick={() => { setAdditionalCosts((prev) => prev.filter((x) => x.id !== c.id)); setDirty(true); }}>×</button>
+              </span>
+            ))}
+          </div>
+          {additionalCostsOptions.length > 0 && (
+            <select className="idf__input idf__select idf__select--add" value=""
+              onChange={(e) => {
+                const id = e.target.value === "" ? null : Number(e.target.value);
+                e.target.value = "";
+                if (id != null && !additionalCosts.some((c) => c.id === id)) {
+                  const opt = additionalCostsOptions.find((a) => a.id === id);
+                  setAdditionalCosts((prev) => [...prev, { id, label: opt ? opt.label : `ID: ${id}` }]);
+                  setDirty(true);
+                }
+              }}>
+              <option value="">+ Add cost…</option>
+              {additionalCostsOptions.filter((a) => !additionalCosts.some((c) => c.id === a.id)).map((a) => (
+                <option key={a.id} value={a.id}>{a.label}</option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+
+      {Object.keys(extraFields).length > 0 && (
+        <div className="idf__section">
+          <p className="idf__section-title">Other Fields</p>
+          <div className="idf__grid2">
+            {Object.entries(extraFields).map(([key, value]) => (
+              <div key={key}>
+                <label className="idf__label">{fieldLabel(key)}</label>
+                {typeof value === "boolean" ? (
+                  <label className="idf__toggle">
+                    <span className="idf__toggle-track">
+                      <input type="checkbox" checked={!!extraFields[key]} onChange={(e) => setExtraField(key, e.target.checked)} />
+                      <span className="idf__toggle-thumb" />
+                    </span>
+                  </label>
+                ) : (
+                  <input className="idf__input"
+                    type={typeof value === "number" ? "number" : "text"}
+                    step={typeof value === "number" ? "any" : undefined}
+                    value={extraFields[key] ?? ""}
+                    onChange={(e) => setExtraField(key, typeof value === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(item?.createdAt || item?.updatedAt) && (
+        <div className="idf__meta">
+          {item?.createdAt && <span>Created {new Date(item.createdAt).toLocaleDateString()}</span>}
+          {item?.updatedAt && <span>Updated {new Date(item.updatedAt).toLocaleDateString()}</span>}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <main className="page">
       {!isModal && (
-        <button className="btn btn--link" onClick={() => navigate("/items", { state: { workAreaId: location.state?.fromWorkAreaId, categoryId: location.state?.fromCategoryId } })}>Back to Items</button>
+        <button className="btn btn--link" onClick={() => navigate("/items", { state: { workAreaId: location.state?.fromWorkAreaId, categoryId: location.state?.fromCategoryId } })}>← Back</button>
       )}
 
       {error && (
@@ -512,493 +504,37 @@ export default function PayloadItemDetailPage({ isModal = false }) {
         </div>
       )}
 
-      {/* ════════ ITEM INFO ════════ */}
-      <div className="payload-detail">
-        <div className="payload-detail__editor">
-          {categoryName && (
-            <div className="payload-detail__field">
-              <label className="payload-detail__label">Category</label>
-              <div className="payload-detail__readonly">{categoryName}</div>
-            </div>
-          )}
+      {/* ════════ ITEM DETAIL ════════ */}
+      <div className={isModal ? "idf-modal-layout" : "idf-page-layout"}>
 
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Item Name</label>
-            <input className="payload-detail__input" type="text" value={name} placeholder="Enter item name"
-              onChange={(e) => { setName(e.target.value); setDirty(true); }} />
+        {/* Left: form */}
+        <div className="idf-modal-layout__form">
+          <div className="idf__item-header">
+            {categoryName && <p className="idf__category">{categoryName}</p>}
+            <input
+              className="idf__name-input"
+              type="text"
+              value={name}
+              placeholder="Item name"
+              onChange={(e) => { setName(e.target.value); setDirty(true); }}
+            />
           </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Description</label>
-            <RichTextEditor content={description} onChange={(html) => { setDescription(html); setDirty(true); }} />
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Unit</label>
-            <select
-              className="payload-detail__input"
-              value={unit}
-              onChange={(e) => { setUnit(e.target.value); setDirty(true); }}
-            >
-              {UNIT_OPTIONS.map((opt) => (
-                <option key={opt || "__empty__"} value={opt}>
-                  {opt || "— Select unit —"}
-                </option>
-              ))}
-              {unit && !UNIT_OPTIONS.includes(unit) && (
-                <option value={unit}>{unit}</option>
-              )}
-            </select>
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Material Cost</label>
-            <input className="payload-detail__input" type="number" step="any" min="0" value={materialCost} placeholder="0.00"
-              onChange={(e) => { setMaterialCost(e.target.value); setDirty(true); }} />
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Labor Hours</label>
-            <input className="payload-detail__input" type="number" step="any" min="0" value={laborHours} placeholder="0"
-              onChange={(e) => { setLaborHours(e.target.value); setDirty(true); }} />
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Multiplier Override</label>
-            <input className="payload-detail__input" type="number" step="any" value={multiplierOverride} placeholder="Optional"
-              onChange={(e) => { setMultiplierOverride(e.target.value); setDirty(true); }} />
-          </div>
-
-          <div className="payload-detail__field payload-detail__field--checkboxes">
-            <label className="payload-detail__checkbox-wrap">
-              <input type="checkbox" checked={subItem} onChange={(e) => { setSubItem(e.target.checked); setDirty(true); }} />
-              <span>Sub Item</span>
-            </label>
-            <label className="payload-detail__checkbox-wrap">
-              <input type="checkbox" checked={requiresInfo} onChange={(e) => { setRequiresInfo(e.target.checked); setDirty(true); }} />
-              <span>Requires Info</span>
-            </label>
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Factors</label>
-            <div className="payload-detail__chips">
-              {factors.map((f) => (
-                <span key={f.id} className="payload-detail__chip">
-                  {f.label}
-                  <button type="button" className="payload-detail__chip-remove" onClick={() => { setFactors((prev) => prev.filter((x) => x.id !== f.id)); setDirty(true); }} aria-label="Remove">×</button>
-                </span>
-              ))}
-            </div>
-            <div className="payload-detail__relation-row">
-              <select
-                className="payload-detail__input"
-                value=""
-                onChange={(e) => {
-                  const id = e.target.value === "" ? null : Number(e.target.value);
-                  e.target.value = "";
-                  if (id != null && !factors.some((c) => c.id === id)) {
-                    const opt = factorsOptions.find((a) => a.id === id);
-                    setFactors((prev) => [...prev, { id, label: opt ? opt.label : `ID: ${id}` }]);
-                    setDirty(true);
-                  }
-                }}
-              >
-                <option value="">Select to add...</option>
-                {factorsOptions
-                  .filter((a) => !factors.some((c) => c.id === a.id))
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>{a.label}</option>
-                  ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="payload-detail__field">
-            <label className="payload-detail__label">Additional costs</label>
-            <div className="payload-detail__chips">
-              {additionalCosts.map((c) => (
-                <span key={c.id} className="payload-detail__chip">
-                  {c.label}
-                  <button type="button" className="payload-detail__chip-remove" onClick={() => { setAdditionalCosts((prev) => prev.filter((x) => x.id !== c.id)); setDirty(true); }} aria-label="Remove">×</button>
-                </span>
-              ))}
-            </div>
-            <div className="payload-detail__relation-row">
-              <select
-                className="payload-detail__input"
-                value=""
-                onChange={(e) => {
-                  const id = e.target.value === "" ? null : Number(e.target.value);
-                  e.target.value = "";
-                  if (id != null && !additionalCosts.some((c) => c.id === id)) {
-                    const opt = additionalCostsOptions.find((a) => a.id === id);
-                    setAdditionalCosts((prev) => [...prev, { id, label: opt ? opt.label : `ID: ${id}` }]);
-                    setDirty(true);
-                  }
-                }}
-              >
-                <option value="">Select to add...</option>
-                {additionalCostsOptions
-                  .filter((a) => !additionalCosts.some((c) => c.id === a.id))
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>{a.label}</option>
-                  ))}
-              </select>
-              {additionalCostsOptions.length === 0 && (
-                <span className="payload-detail__hint">Load additional costs from Payload or add by ID below</span>
-              )}
-            </div>
-            {additionalCostsOptions.length === 0 && (
-              <div className="payload-detail__relation-row" style={{ marginTop: 8 }}>
-                <input
-                  className="payload-detail__input"
-                  type="number"
-                  placeholder="Add by ID"
-                  value={additionalCostIdToAdd}
-                  onChange={(e) => setAdditionalCostIdToAdd(e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="btn btn--secondary btn--sm"
-                  onClick={() => {
-                    const id = additionalCostIdToAdd === "" ? null : Number(additionalCostIdToAdd);
-                    if (id != null && !Number.isNaN(id) && !additionalCosts.some((c) => c.id === id)) {
-                      setAdditionalCosts((prev) => [...prev, { id, label: `ID: ${id}` }]);
-                      setAdditionalCostIdToAdd("");
-                      setDirty(true);
-                    }
-                  }}
-                >
-                  +
-                </button>
-              </div>
-            )}
-          </div>
-
-          {Object.keys(extraFields).length > 0 && (
-            <>
-              <div className="payload-detail__field payload-detail__field--divider">
-                <span className="payload-detail__label">Other fields</span>
-              </div>
-              {Object.entries(extraFields).map(([key, value]) => (
-                <div key={key} className="payload-detail__field">
-                  <label className="payload-detail__label">{fieldLabel(key)}</label>
-                  {typeof value === "boolean" ? (
-                    <label className="payload-detail__checkbox-wrap">
-                      <input type="checkbox" checked={!!extraFields[key]}
-                        onChange={(e) => setExtraField(key, e.target.checked)} />
-                      <span>{fieldLabel(key)}</span>
-                    </label>
-                  ) : (
-                    <input
-                      className="payload-detail__input"
-                      type={typeof value === "number" ? "number" : "text"}
-                      step={typeof value === "number" ? "any" : undefined}
-                      value={extraFields[key] ?? ""}
-                      onChange={(e) => setExtraField(key, typeof value === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)}
-                    />
-                  )}
-                </div>
-              ))}
-            </>
-          )}
-
-          {(item?.createdAt || item?.updatedAt) && (
-            <div className="payload-detail__meta payload-detail__meta--top">
-              {item?.createdAt && (
-                <div className="payload-detail__meta-row">
-                  <span>Created</span>
-                  <span>{new Date(item.createdAt).toLocaleString()}</span>
-                </div>
-              )}
-              {item?.updatedAt && (
-                <div className="payload-detail__meta-row">
-                  <span>Last updated</span>
-                  <span>{new Date(item.updatedAt).toLocaleString()}</span>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="payload-detail__actions">
-            <button className="btn btn--primary" onClick={handleSave} disabled={!dirty || saving}>
-              {saving ? "Saving..." : "Save to Payload"}
-            </button>
-            <button className="btn btn--secondary" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-              {uploading ? "Uploading..." : "Upload Image"}
-            </button>
-            <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleUpload} />
-            {savedMsg && <span className="payload-detail__saved-msg">{savedMsg}</span>}
-          </div>
+          {formSections}
         </div>
 
-        <div className="payload-detail__images">
-          <div className="payload-detail__main-img-wrap">
-            {currentImage ? (
-              currentIsVideo ? (
-                <video className="payload-detail__main-img" src={currentImage} controls />
-              ) : (
-                <img className="payload-detail__main-img" src={currentImage} alt={name || "Item"} />
-              )
-            ) : (
-              <div className="payload-detail__no-image">No media available</div>
-            )}
-          </div>
-          {mediaList.length > 0 && (
-            <div className="payload-detail__thumbs">
-              {mediaList.map((m, idx) => (
-                <div key={m.id} className="payload-detail__thumb-wrap">
-                  {m.isVideo ? (
-                    <div
-                      className={`payload-detail__thumb payload-detail__thumb--video ${idx === selectedMedia ? "payload-detail__thumb--active" : ""}`}
-                      onClick={() => setSelectedMedia(idx)}
-                      title={m.filename}
-                    >
-                      <span className="payload-detail__thumb-video-icon">&#9654;</span>
-                    </div>
-                  ) : (
-                    <img
-                      src={m.thumbUrl}
-                      alt={m.filename}
-                      className={`payload-detail__thumb ${idx === selectedMedia ? "payload-detail__thumb--active" : ""}`}
-                      onClick={() => setSelectedMedia(idx)}
-                    />
-                  )}
-                  <button
-                    className="payload-detail__thumb-remove"
-                    title="Remove from item"
-                    disabled={detaching === m.id}
-                    onClick={(e) => { e.stopPropagation(); handleDetachMedia(m.id); }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+        {/* Right: image gallery */}
+        <div className="idf-modal-layout__image">
+          {imagePanel}
         </div>
       </div>
 
-      {/* ════════ CATALOG GENERATOR ════════ */}
-      <div className="gen-section">
-        <button className="gen-section__toggle" onClick={() => setShowGenerator(!showGenerator)}>
-          <span className="gen-section__toggle-icon">{showGenerator ? "▾" : "▸"}</span>
-          Generate Catalog Image with Scene
+      {/* ════════ SAVE BAR ════════ */}
+      <div className="idf__save-bar">
+        <button className="idf__save-btn" onClick={handleSave} disabled={!dirty || saving}>
+          {saving ? "Saving…" : dirty ? "Save Changes" : "Saved"}
         </button>
-
-        {showGenerator && (
-          <div className="gen-section__body">
-            {/* Scene selector */}
-            <div className="gen-section__field" style={{ marginBottom: 20, maxWidth: 400 }}>
-              <label className="payload-detail__label">Scene</label>
-              <select className="payload-detail__input" value={selectedSceneId} onChange={(e) => setSelectedSceneId(e.target.value)}>
-                <option value="">Select a scene...</option>
-                {scenes.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-            </div>
-
-            {selectedScene && (
-              <div className="gen-section__scene-preview">
-                <img src={selectedScene.backgroundUrl} alt={selectedScene.name} />
-                {selectedScene.logoUrl && (
-                  <img
-                    className={`scene-preview__logo-overlay scene-preview__logo--${selectedScene.logoPosition || "bottom-right"}`}
-                    src={selectedScene.logoUrl}
-                    alt="Logo"
-                  />
-                )}
-              </div>
-            )}
-
-            <ModeSelector value={genMode} onChange={setGenMode} />
-            <FormatSelector value={genFormat} onChange={setGenFormat} />
-
-            {genMode !== "quick" && (
-              <div className="options-row">
-                <div className="input-group">
-                  <label className="input-group__label" htmlFor="gen-instruction">Extra Instructions (optional)</label>
-                  <input id="gen-instruction" className="input-group__input" type="text"
-                    placeholder="e.g. Place item on the left side"
-                    value={genInstruction} onChange={(e) => setGenInstruction(e.target.value)} />
-                </div>
-              </div>
-            )}
-
-            {/* Product upload */}
-            {!genItemFile && (
-              <div className="upload-grid upload-grid--single">
-                <div className="upload-field" onClick={() => genItemRef.current?.click()} role="button" tabIndex={0}>
-                  <span className="upload-field__icon">📦</span>
-                  <div className="upload-field__label">Item / Product</div>
-                  <div className="upload-field__hint">Upload the product image</div>
-                  <input ref={genItemRef} className="upload-field__input" type="file"
-                    accept="image/jpeg,image/png,image/webp" onChange={handleGenItemSelect} />
-                </div>
-              </div>
-            )}
-
-            {removingBg && (
-              <div className="removing-bg-banner">
-                <div className="removing-bg-banner__spinner" />
-                <span>Removing background...</span>
-              </div>
-            )}
-
-            {transparentUrl && !removingBg && selectedScene && (
-              <ItemPreviewComposite
-                backgroundUrl={selectedScene.backgroundUrl}
-                itemPreviewUrl={transparentUrl}
-                scale={itemScale}
-                onScaleChange={setItemScale}
-                shadowIntensity={shadowIntensity}
-                onShadowIntensityChange={setShadowIntensity}
-              />
-            )}
-
-            {genItemFile && (
-              <div className="gen-section__actions">
-                <button className="btn btn--primary" disabled={!selectedSceneId || generating || removingBg} onClick={handleGenerate}>
-                  {generating ? "Generating..." : "Generate Image"}
-                </button>
-                <button className="btn btn--secondary" onClick={resetGenerator}>Reset</button>
-              </div>
-            )}
-
-            {genResult && (
-              <div className="gen-section__result">
-                <div className="gen-section__result-img-wrap">
-                  <img className="gen-section__result-img" src={genResult.imageUrl} alt="Generated" />
-                </div>
-                <div className="gen-section__result-actions">
-                  <button className="btn btn--primary" onClick={handleUploadGenerated} disabled={uploadingGen}>
-                    {uploadingGen ? "Uploading..." : "Send to Payload"}
-                  </button>
-                  <a className="btn btn--secondary" href={genResult.imageUrl} download={genResult.filename} target="_blank" rel="noreferrer">
-                    Download
-                  </a>
-                  <button className="btn btn--secondary" onClick={resetGenerator}>New Image</button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* ════════ SERVICE PHOTO GENERATOR ════════ */}
-      <div className="gen-section">
-        <button className="gen-section__toggle" onClick={() => setShowService(!showService)}>
-          <span className="gen-section__toggle-icon">{showService ? "▾" : "▸"}</span>
-          Process Service Photo
-        </button>
-
-        {showService && (
-          <div className="gen-section__body">
-            {/* Logo upload */}
-            <div className="service-logo-upload">
-              <div
-                className={`service-logo-upload__area ${svcLogoPreview ? "service-logo-upload__area--has-logo" : ""}`}
-                onClick={() => svcLogoRef.current?.click()}
-                role="button" tabIndex={0}
-              >
-                {svcLogoPreview ? (
-                  <img className="service-logo-upload__preview" src={svcLogoPreview} alt="Logo" />
-                ) : (
-                  <>
-                    <span className="upload-field__icon">🏷️</span>
-                    <div className="upload-field__label">Upload Logo</div>
-                  </>
-                )}
-              </div>
-              {svcLogoPreview && (
-                <button className="btn btn--ghost btn--sm" onClick={() => svcLogoRef.current?.click()}>Change Logo</button>
-              )}
-              <input ref={svcLogoRef} type="file" accept="image/jpeg,image/png,image/webp" style={{ display: "none" }} onChange={handleSvcLogoSelect} />
-            </div>
-
-            <FormatSelector value={svcFormat} onChange={setSvcFormat} />
-
-            <div className="service-workspace">
-              <div className="service-workspace__preview">
-                {svcPhotoPreview ? (
-                  <div className="service-preview__canvas">
-                    <img className="service-preview__photo" src={svcPhotoPreview} alt="Photo preview" style={{ filter: svcCssFilter }} />
-                    {svcLogoPreview && (
-                      <img
-                        className={`service-preview__logo service-preview__logo--${svcLogoPosition}`}
-                        src={svcLogoPreview} alt="Logo"
-                        style={{ maxWidth: `${svcLogoScale * 100}%` }}
-                      />
-                    )}
-                  </div>
-                ) : (
-                  <div className="service-preview__upload-area" onClick={() => svcPhotoRef.current?.click()} role="button" tabIndex={0}>
-                    <span className="upload-field__icon">📷</span>
-                    <div className="upload-field__label">Upload Photo</div>
-                    <div className="upload-field__hint">Select a service photo</div>
-                  </div>
-                )}
-                <input ref={svcPhotoRef} type="file" accept="image/jpeg,image/png,image/webp" style={{ display: "none" }} onChange={handleSvcPhotoSelect} />
-              </div>
-
-              <div className="service-workspace__controls">
-                <LogoPositionGrid value={svcLogoPosition} onChange={setSvcLogoPosition} />
-
-                <div className="input-group" style={{ marginTop: 16 }}>
-                  <label className="input-group__label">Logo Size: <strong>{Math.round(svcLogoScale * 100)}%</strong></label>
-                  <input className="composite-preview__slider" type="range"
-                    min={0.05} max={0.50} step={0.01} value={svcLogoScale}
-                    onChange={(e) => setSvcLogoScale(parseFloat(e.target.value))} />
-                </div>
-
-                <div className="service-lighting--inline">
-                  <h4 className="service-lighting__title">Lighting</h4>
-                  <LightingSlider label="Brightness" value={svcLighting.brightness} min={0.5} max={1.5} step={0.01} onChange={(v) => updateSvcLighting("brightness", v)} />
-                  <LightingSlider label="Contrast" value={svcLighting.contrast} min={0.5} max={2.0} step={0.01} onChange={(v) => updateSvcLighting("contrast", v)} />
-                  <LightingSlider label="Saturation" value={svcLighting.saturation} min={0.5} max={1.5} step={0.01} onChange={(v) => updateSvcLighting("saturation", v)} />
-                  <LightingSlider label="Warmth" value={svcLighting.warmth} min={-1} max={1} step={0.05} onChange={(v) => updateSvcLighting("warmth", v)} />
-                  <button className="btn btn--ghost btn--sm" style={{ marginTop: 8 }} onClick={() => setSvcLighting({ ...LIGHTING_DEFAULTS })}>
-                    Reset Lighting
-                  </button>
-                </div>
-
-                {svcPhotoFile && (
-                  <button className="btn btn--primary btn--full" style={{ marginTop: 20 }}
-                    disabled={svcProcessing || !svcLogoFile} onClick={handleSvcProcess}>
-                    {svcProcessing ? "Processing..." : "Process Photo"}
-                  </button>
-                )}
-                {svcPhotoFile && !svcProcessing && (
-                  <button className="btn btn--ghost btn--full" style={{ marginTop: 8 }} onClick={() => svcPhotoRef.current?.click()}>
-                    Change Photo
-                  </button>
-                )}
-                {!svcPhotoFile && (
-                  <button className="btn btn--primary btn--full" style={{ marginTop: 20 }} onClick={() => svcPhotoRef.current?.click()}>
-                    Upload Photo
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {svcResult && (
-              <div className="gen-section__result">
-                <div className="gen-section__result-img-wrap">
-                  <img className="gen-section__result-img" src={svcResult.imageUrl} alt="Processed" />
-                </div>
-                <div className="gen-section__result-actions">
-                  <button className="btn btn--primary" onClick={handleUploadSvc} disabled={uploadingSvc}>
-                    {uploadingSvc ? "Uploading..." : "Send to Payload"}
-                  </button>
-                  <a className="btn btn--secondary" href={svcResult.imageUrl} download={svcResult.filename} target="_blank" rel="noreferrer">
-                    Download
-                  </a>
-                  <button className="btn btn--secondary" onClick={resetService}>New Photo</button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+        {savedMsg && <span className="idf__saved-msg">✓ {savedMsg}</span>}
+        {error && <span className="idf__error-msg">⚠ {error}</span>}
       </div>
     </main>
   );

@@ -1,5 +1,4 @@
 import config from "../config.js";
-import { getAuthHeader } from "./payloadAuth.js";
 
 const BASE = `${config.API_BASE_URL}/payload`;
 const CACHE_TTL_MS = 2 * 60 * 1000; // 5 min
@@ -10,12 +9,7 @@ const categoriesCache = { data: null, expires: 0 };
 const itemsCache = new Map(); // categoryId -> { data, expires }
 
 async function request(url, options = {}) {
-  const { headers: optHeaders, ...rest } = options;
-  const headers = { ...getAuthHeader(), ...optHeaders };
-  if (rest.body instanceof FormData) {
-    delete headers["Content-Type"];
-  }
-  const res = await fetch(url, { ...rest, headers });
+  const res = await fetch(url, options);
   const body = await res.json();
   if (!res.ok) {
     throw new Error(body.error || body.message || `Server error (${res.status})`);
@@ -33,16 +27,18 @@ export function invalidatePayloadCache(categoryId) {
   else itemsCache.clear();
 }
 
-export async function fetchWorkAreas() {
+export async function fetchWorkAreas(orgId) {
+  const cacheKey = orgId ?? "__all__";
   const now = Date.now();
-  if (workAreasCache.data && now < workAreasCache.expires) {
-    return workAreasCache.data;
-  }
-  const body = await request(`${BASE}/work-areas`);
+  // use the existing cache object keyed by orgId via a nested map
+  const cached = workAreasCache[cacheKey];
+  if (cached && now < cached.expires) return cached.data;
+  const url = orgId ? `${BASE}/work-areas?orgId=${orgId}` : `${BASE}/work-areas`;
+  const body = await request(url);
   const data = body.data ?? body;
-  workAreasCache.data = { ...body, data };
-  workAreasCache.expires = now + CACHE_TTL_MS;
-  return workAreasCache.data;
+  const result = { ...body, data };
+  workAreasCache[cacheKey] = { data: result, expires: now + CACHE_TTL_MS };
+  return result;
 }
 
 export async function fetchCategoriesByWorkArea(workAreaId) {
@@ -61,16 +57,17 @@ export async function fetchCategoriesByWorkArea(workAreaId) {
   return result;
 }
 
-export async function fetchCategories() {
+export async function fetchCategories(orgId) {
+  const cacheKey = orgId ?? "__all__";
   const now = Date.now();
-  if (categoriesCache.data && now < categoriesCache.expires) {
-    return categoriesCache.data;
-  }
-  const body = await request(`${BASE}/categories`);
+  const cached = categoriesCache[cacheKey];
+  if (cached && now < cached.expires) return cached.data;
+  const url = orgId ? `${BASE}/categories?orgId=${orgId}` : `${BASE}/categories`;
+  const body = await request(url);
   const data = body.data ?? body;
-  categoriesCache.data = { ...body, data };
-  categoriesCache.expires = now + CACHE_TTL_MS;
-  return categoriesCache.data;
+  const result = { ...body, data };
+  categoriesCache[cacheKey] = { data: result, expires: now + CACHE_TTL_MS };
+  return result;
 }
 
 export async function fetchWorkArea(id) {

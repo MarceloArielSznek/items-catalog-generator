@@ -1,0 +1,24 @@
+{
+  "isDemoOrg": false,
+  "websiteUrl": "https://www.atticprojectscompany.com/",
+  "websiteContext": {
+    "companyName": "Attic Projects",
+    "industry": "attic insulation and crawl space services",
+    "services": [
+      "Attic Insulation Installation",
+      "Crawl Space Cleaning",
+      "Rodent Proofing",
+      "Air Duct Cleaning",
+      "Mold Remediation",
+      "HVAC Installation",
+      "Attic Remodeling"
+    ],
+    "visualStyle": [
+      "clean",
+      "professional",
+      "trustworthy"
+    ],
+    "targetMarket": "residential homeowners in Southern California and Western Washington"
+  },
+  "updatedAt": "2026-06-03T22:35:26.295Z"
+}
