@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { getOrg, deleteOrg, deployOrg, planOrgDeployment, seedDemoData, planDemoData, generateOrgLogo, setLogoPlaceholder, cloneToReal, addWorkArea, generateWorkAreaCatalog, getVideoProviders, listOrgVideos, generateOrgVideo, previewOrgVideoPrompt, deleteOrgVideo } from "../services/orgApi.js";
+import { getOrg, deleteOrg, deployOrg, planOrgDeployment, seedDemoData, planDemoData, generateOrgLogo, setLogoPlaceholder, cloneToReal, addWorkArea, generateWorkAreaCatalog, exportDeployUsers, getVideoProviders, listOrgVideos, generateOrgVideo, previewOrgVideoPrompt, deleteOrgVideo } from "../services/orgApi.js";
 import { getMenaiaSettings, hasMenaiaSettings, hasAdminAuthSettings } from "../services/menaiaSettings.js";
 
 function StatBadge({ label, value }) {
@@ -239,15 +239,40 @@ function CatalogSection({ resources }) {
   );
 }
 
-function UsersSection({ users }) {
+function UsersSection({ users, slug }) {
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
   const roleGroups = users.reduce((acc, u) => {
     if (!acc[u.role]) acc[u.role] = [];
     acc[u.role].push(u);
     return acc;
   }, {});
 
+  async function handleExport() {
+    setExporting(true);
+    setExportError("");
+    try {
+      await exportDeployUsers(slug);
+    } catch (e) {
+      setExportError(e.message);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <SectionCard title={`Users (${users.length})`}>
+      <div className="users-toolbar">
+        <button
+          className="btn btn--secondary btn--sm"
+          onClick={handleExport}
+          disabled={exporting || users.length === 0}
+          title="Download an .xlsx of the deployed users (email, password, role, branches)"
+        >
+          {exporting ? "Exporting…" : "⬇ Export users Excel"}
+        </button>
+      </div>
+      {exportError && <div className="deploy-result deploy-result--error">{exportError}</div>}
       <div className="users-grid">
         {Object.entries(roleGroups).map(([role, roleUsers]) => (
           <div key={role} className="user-role-group">
@@ -1360,7 +1385,7 @@ export default function OrgDetailPage() {
         <CatalogSection resources={org.resources} />
         <ImagesSection org={org} />
         <VideoSection org={org} />
-        <UsersSection users={org.users} />
+        <UsersSection users={org.users} slug={org.slug} />
         <DeploySection
           slug={org.slug}
           status={org.status}

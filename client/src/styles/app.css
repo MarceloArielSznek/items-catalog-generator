@@ -7796,6 +7796,12 @@ body {
 
 /* ── Users Grid ── */
 
+.users-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 14px;
+}
+
 .users-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
