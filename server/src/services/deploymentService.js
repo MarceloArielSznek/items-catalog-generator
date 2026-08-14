@@ -571,6 +571,81 @@ async function uploadUserAvatar(baseUrl, auth, userId, fileBuffer, filename) {
   return registered?.mediaId ?? null;
 }
 
+/**
+ * Re-link work areas → item categories on an ALREADY-DEPLOYED org, without
+ * touching items/images/anything else. For fixing orgs deployed while the Menaia
+ * work-area↔category persistence bug was live (see the `replaceRels` field-name
+ * bug): once Menaia ships the fix, run this to PATCH each work area with its
+ * category ids (resolved from the draft's names against the org's existing
+ * work areas/categories). Idempotent, fast (one PATCH per work area). Uses the
+ * same auth (service key or admin JWT) + confirmation as the deploy.
+ */
+export async function relinkWorkAreas(org, options, onStep) {
+  const log = [];
+  const actions = [];
+  const step = (name, status, detail = '') => {
+    const entry = { name, status, detail, ts: new Date().toISOString() };
+    log.push(entry);
+    onStep?.(entry);
+    logger.info(`[relink] ${name}: ${status} ${detail}`);
+  };
+  try {
+    step('auth', 'running');
+    const auth = await authenticate(options.credentials, options.apiUrl);
+    const organization = await resolveScopedOrganization(options.apiUrl, auth, options.expectedOrganizationId);
+    const expected = `${organization.id}:${organization.slug || organization.domain || organization.name}`;
+    if (options.confirmation !== expected) throw new Error(`Confirmation must exactly match "${expected}"`);
+    step('auth', 'done', `Scoped to organization ${organization.name} (${organization.id})`);
+
+    // Load what's already in the org so we match by name (the deploy created
+    // these; we only fix the missing category links).
+    step('load', 'running');
+    const [existingWorkAreas, existingCategories, existingFactors] = await Promise.all([
+      listAll(options.apiUrl, auth, 'work-areas'),
+      listAll(options.apiUrl, auth, 'item-categories'),
+      listAll(options.apiUrl, auth, 'factors'),
+    ]);
+    const waByName = nameMap(existingWorkAreas);
+    const catByName = nameMap(existingCategories);
+    const factorByName = nameMap(existingFactors);
+    step('load', 'done', `${existingWorkAreas.length} work areas · ${existingCategories.length} categories`);
+
+    step('relink', 'running');
+    let linkedCats = 0;
+    const failures = [];
+    for (const wa of org.resources.workAreas) {
+      const target = waByName.get(String(wa.name).trim().toLowerCase());
+      if (!target) { failures.push(`work area "${wa.name}" not found in org`); continue; }
+      const itemCategoryIds = (wa.categories || [])
+        .map((n) => catByName.get(String(n).trim().toLowerCase())?.id)
+        .filter(Boolean);
+      const factorIds = (wa.factorNames || [])
+        .map((n) => factorByName.get(String(n).trim().toLowerCase())?.id)
+        .filter(Boolean);
+      try {
+        // Send both rel sets so the work-area update writes the full relation
+        // (matches the deploy's write body).
+        await apiCall(options.apiUrl, auth, 'PATCH', `/work-areas/${target.id}`, { itemCategoryIds, factorIds });
+        linkedCats += itemCategoryIds.length;
+        actions.push({ collection: 'work-areas', operation: 'relinked', name: wa.name, id: target.id, ts: new Date().toISOString() });
+      } catch (err) {
+        failures.push(`${wa.name}: ${err.message}`);
+        logger.warn(`[relink] work area "${wa.name}" failed: ${err.message}`);
+      }
+    }
+    if (failures.length) {
+      step('relink', 'failed', `${linkedCats} category link(s) set across ${actions.length} work area(s), ${failures.length} failed — e.g. ${failures[0]}`);
+    } else {
+      step('relink', 'done', `${linkedCats} category link(s) set across ${actions.length} work area(s)`);
+    }
+    step('complete', failures.length ? 'failed' : 'done', `Re-linked ${actions.length} work area(s) in ${organization.name}`);
+    return { success: failures.length === 0, log, actions, linkedCats, failures, organizationId: organization.id };
+  } catch (err) {
+    step('error', 'failed', err.message);
+    return { success: false, log, actions, error: err.message };
+  }
+}
+
 export async function deployOrg(org, options, onStep) {
   const log = [];
   const actions = [];

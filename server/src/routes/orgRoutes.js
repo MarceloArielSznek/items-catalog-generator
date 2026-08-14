@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import OpenAI from 'openai';
 import * as XLSX from 'xlsx';
 import { listOrgs, getOrg, saveOrg, updateOrg, deleteOrg, updateDeploymentLog } from '../services/orgStorageService.js';
-import { deployOrg, preflightOrgDeployment } from '../services/deploymentService.js';
+import { deployOrg, preflightOrgDeployment, relinkWorkAreas } from '../services/deploymentService.js';
 import { seedDemoData, planDemoData } from '../services/demoDataService.js';
 import { addWorkAreaToOrg, generateWorkAreaCatalog } from '../services/seedGenerator/multiIndustryDemo.js';
 import { improveItemDescriptions, generateProposalContent, generateUserIdentities, inferGenderFromName } from '../services/seedGenerator/improve.js';
@@ -1695,6 +1695,36 @@ router.post('/:slug/deploy', async (req, res) => {
     res.end();
   } catch (err) {
     send({ type: 'done', result: { success: false, error: err.message, log: [], actions: [], credentials: [] } });
+    res.end();
+  }
+});
+
+// POST /api/orgs/:slug/deploy/relink-work-areas — re-attach item categories to
+// work areas on an already-deployed org, WITHOUT re-running items/images. For
+// fixing orgs deployed while the Menaia work-area↔category persistence bug was
+// live. Same auth + confirmation as the deploy; streams as SSE.
+router.post('/:slug/deploy/relink-work-areas', async (req, res) => {
+  const org = getOrg(req.params.slug);
+  if (!org) return res.status(404).json({ success: false, error: 'Org not found' });
+
+  const validationError = validateDeploymentRequest(req.body);
+  if (validationError) return res.status(400).json({ success: false, error: validationError });
+  if (!req.body.expectedOrganizationId || !req.body.confirmation) {
+    return res.status(400).json({ success: false, error: 'Run the deployment plan and confirm its target before re-linking' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  try {
+    logger.info(`Re-linking work areas for ${org.slug} in org ${req.body.expectedOrganizationId} at ${getMenaiaApiUrl()}`);
+    const result = await relinkWorkAreas(org, deploymentOptions(req.body), (entry) => send({ type: 'step', entry }));
+    send({ type: 'done', result });
+    res.end();
+  } catch (err) {
+    send({ type: 'done', result: { success: false, error: err.message, log: [], actions: [] } });
     res.end();
   }
 });

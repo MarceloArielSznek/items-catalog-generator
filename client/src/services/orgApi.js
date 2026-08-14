@@ -138,6 +138,42 @@ export function seedDemoData(slug, options, { onStep = () => {} } = {}) {
   });
 }
 
+// Re-attach item categories to work areas on an already-deployed org (fixes orgs
+// deployed while the Menaia work-area↔category bug was live). SSE, same shape as
+// deployOrg. Takes the same options (expectedOrganizationId + confirmation + auth).
+export function relinkWorkAreas(slug, options, { onStep = () => {} } = {}) {
+  return new Promise((resolve, reject) => {
+    fetch(`${BASE}/${slug}/deploy/relink-work-areas`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...menaiaHeaders() },
+      body: JSON.stringify(options),
+    }).then(async (res) => {
+      if (!(res.headers.get('Content-Type') || '').includes('text/event-stream')) {
+        const j = await res.json().catch(() => ({}));
+        return reject(new Error(j.error || `Error ${res.status}`));
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.type === 'step') onStep(data.entry);
+            else if (data.type === 'done') resolve(data.result);
+          } catch { /* skip malformed frame */ }
+        }
+      }
+    }).catch(reject);
+  });
+}
+
 // Downloads the post-deploy users .xlsx and triggers a browser save dialog.
 export async function exportDeployUsers(slug) {
   const res = await fetch(`${BASE}/${slug}/deploy/export`);

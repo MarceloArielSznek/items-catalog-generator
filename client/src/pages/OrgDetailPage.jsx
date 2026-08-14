@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { getOrg, deleteOrg, deployOrg, planOrgDeployment, seedDemoData, planDemoData, generateOrgLogo, setLogoPlaceholder, cloneToReal, addWorkArea, generateWorkAreaCatalog, exportDeployUsers, getVideoProviders, listOrgVideos, generateOrgVideo, previewOrgVideoPrompt, deleteOrgVideo } from "../services/orgApi.js";
+import { getOrg, deleteOrg, deployOrg, planOrgDeployment, relinkWorkAreas, seedDemoData, planDemoData, generateOrgLogo, setLogoPlaceholder, cloneToReal, addWorkArea, generateWorkAreaCatalog, exportDeployUsers, getVideoProviders, listOrgVideos, generateOrgVideo, previewOrgVideoPrompt, deleteOrgVideo } from "../services/orgApi.js";
 import { getMenaiaSettings, hasMenaiaSettings, hasAdminAuthSettings } from "../services/menaiaSettings.js";
 
 function StatBadge({ label, value }) {
@@ -920,6 +920,32 @@ function DeploySection({ slug, status, onDeployed }) {
     }
   }
 
+  // Deploy ONLY the work-areas → categories links (no items/images). For fixing
+  // orgs deployed while the Menaia work-area↔category bug was live.
+  async function handleRelinkWorkAreas() {
+    if (!plan || confirmation !== plan.confirmation) return;
+    setDeploying(true);
+    setLog([]);
+    setResult(null);
+    try {
+      const res = await relinkWorkAreas(slug, options({
+        expectedOrganizationId: plan.target.id,
+        confirmation,
+      }), {
+        onStep: (entry) => setLog((prev) => [...prev, entry]),
+      });
+      setLog(res.log || []);
+      setResult(res.success
+        ? { success: true, relinked: (res.actions || []).length }
+        : { success: false, error: res.error || "Re-link failed" });
+      if (res.success) onDeployed?.();
+    } catch (e) {
+      setResult({ success: false, error: e.message });
+    } finally {
+      setDeploying(false);
+    }
+  }
+
   return (
     <SectionCard title="Deploy to attic-tech">
       <div className="deploy-panel">
@@ -1025,6 +1051,14 @@ function DeploySection({ slug, status, onDeployed }) {
             </div>
             <button className="btn btn--deploy" onClick={handleDeploy} disabled={deploying || confirmation !== plan.confirmation}>
               {deploying ? "Deploying…" : status === "deployed" ? "Re-deploy to confirmed org" : "Deploy to confirmed org"}
+            </button>
+            <button
+              className="btn btn--secondary"
+              onClick={handleRelinkWorkAreas}
+              disabled={deploying || confirmation !== plan.confirmation}
+              title="Only re-attach item categories to work areas (no items/images) — for orgs deployed before the Menaia work-area↔category fix"
+            >
+              Deploy work areas only
             </button>
           </div>
         )}
