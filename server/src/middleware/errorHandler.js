@@ -1,6 +1,19 @@
 import logger from "../utils/logger.js";
+import { HttpError } from "../utils/httpError.js";
 
 export function errorHandler(err, _req, res, _next) {
+  if (err instanceof HttpError) {
+    if (err.status >= 500) {
+      logger.error("HTTP error", { status: err.status, message: err.message, stack: err.stack });
+    } else {
+      logger.warn("HTTP client error", { status: err.status, message: err.message });
+    }
+    return res.status(err.status).json({
+      success: false,
+      error: err.message,
+    });
+  }
+
   logger.error("Unhandled error", { message: err.message, stack: err.stack });
 
   if (err.code === "LIMIT_FILE_SIZE") {

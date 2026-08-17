@@ -1,0 +1,195 @@
+/**
+ * Form-builder visual system scoped to the login screen only (does not affect rest of catalog).
+ */
+.form-builder-login-scope {
+  --bg: #f4f6fb;
+  --bg-elevated: #ffffff;
+  --bg-muted: #eef2ff;
+  --surface: rgba(255, 255, 255, 0.82);
+  --surface-strong: #ffffff;
+  --surface-subtle: #f8faff;
+  --text: #5b6474;
+  --text-h: #111827;
+  --text-soft: #7c8798;
+  --border: #d8dfeb;
+  --border-strong: #c6d0e1;
+  --accent: #6d28d9;
+  --accent-strong: #5b21b6;
+  --accent-bg: rgba(109, 40, 217, 0.12);
+  --accent-border: rgba(109, 40, 217, 0.28);
+  --danger: #c2410c;
+  --danger-bg: rgba(194, 65, 12, 0.12);
+  --shadow-sm: 0 10px 30px rgba(15, 23, 42, 0.06);
+  --shadow: 0 18px 44px rgba(15, 23, 42, 0.08), 0 6px 18px rgba(15, 23, 42, 0.04);
+  --radius: 16px;
+  --sans: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --heading: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  min-height: 100svh;
+  margin: 0;
+  font: 16px/1.5 var(--sans);
+  letter-spacing: -0.01em;
+  color: var(--text);
+  color-scheme: light;
+  background:
+    radial-gradient(circle at top, rgba(109, 40, 217, 0.08), transparent 35%),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-elevated) 100%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .form-builder-login-scope {
+    --bg: #08111f;
+    --bg-elevated: #0d1729;
+    --bg-muted: #16243d;
+    --surface: rgba(13, 23, 41, 0.86);
+    --surface-strong: #101c30;
+    --surface-subtle: #13233d;
+    --text: #9cafc6;
+    --text-h: #f8fafc;
+    --text-soft: #c4d0e1;
+    --border: rgba(148, 163, 184, 0.16);
+    --border-strong: rgba(148, 163, 184, 0.3);
+    --accent: #9d7bff;
+    --accent-strong: #c7b4ff;
+    --accent-bg: rgba(157, 123, 255, 0.18);
+    --accent-border: rgba(157, 123, 255, 0.34);
+    --danger: #fb923c;
+    --danger-bg: rgba(251, 146, 60, 0.18);
+    --shadow-sm: 0 14px 34px rgba(2, 6, 23, 0.34);
+    --shadow: 0 24px 60px rgba(2, 6, 23, 0.4), 0 10px 24px rgba(2, 6, 23, 0.2);
+    color-scheme: dark;
+    background:
+      radial-gradient(circle at top, rgba(157, 123, 255, 0.14), transparent 24%),
+      radial-gradient(circle at bottom right, rgba(34, 211, 238, 0.05), transparent 24%),
+      linear-gradient(180deg, #07111f 0%, #0b1626 100%);
+  }
+}
+
+.form-builder-login-scope *,
+.form-builder-login-scope *::before,
+.form-builder-login-scope *::after {
+  box-sizing: border-box;
+}
+
+.form-builder-login-scope h1 {
+  margin: 0;
+  color: var(--text-h);
+  font-family: var(--heading);
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  font-size: clamp(2rem, 4vw, 3.25rem);
+  font-weight: 700;
+}
+
+.form-builder-login-scope p {
+  margin: 0;
+}
+
+.form-builder-login-scope .app-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-builder-login-scope .app-status__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.form-builder-login-scope .app-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  min-height: 2.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.9rem;
+  border: 1px solid transparent;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+  box-shadow: 0 10px 24px rgba(109, 40, 217, 0.22);
+}
+
+.form-builder-login-scope .app-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.form-builder-login-scope .app-button:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.form-builder-login-scope .app-input {
+  width: 100%;
+  min-height: 2.875rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+  background: var(--surface-strong);
+  color: var(--text-h);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    background-color 0.18s ease;
+}
+
+.form-builder-login-scope .app-input::placeholder {
+  color: var(--text-soft);
+}
+
+.form-builder-login-scope .app-input:focus {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 4px var(--accent-bg);
+  outline: none;
+}
+
+.form-builder-login-scope .app-label {
+  display: block;
+  margin-bottom: 0.45rem;
+  color: var(--text-h);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.form-builder-login-scope .app-helper {
+  font-size: 0.86rem;
+  color: var(--text-soft);
+}
+
+.form-builder-login-scope .app-banner--danger {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.95rem 1rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(194, 65, 12, 0.2);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+@media (prefers-color-scheme: dark) {
+  .form-builder-login-scope .app-button {
+    box-shadow: 0 10px 24px rgba(157, 123, 255, 0.25);
+  }
+}

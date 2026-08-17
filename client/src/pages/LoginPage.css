@@ -1,0 +1,89 @@
+/* Layout matches form-builder/frontend/src/pages/LoginPage.css */
+.form-builder-login-scope .login-page {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+}
+
+.form-builder-login-scope .login-page__panel {
+  width: min(100%, 68rem);
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  overflow: hidden;
+  border-radius: 1.75rem;
+}
+
+.form-builder-login-scope .login-page__intro,
+.form-builder-login-scope .login-page__form {
+  padding: 2.5rem;
+}
+
+.form-builder-login-scope .login-page__intro {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1rem;
+  background:
+    radial-gradient(circle at top right, rgba(109, 40, 217, 0.14), transparent 38%),
+    linear-gradient(180deg, var(--surface-strong) 0%, var(--surface-subtle) 100%);
+  border-right: 1px solid var(--border);
+}
+
+.form-builder-login-scope .login-page__title {
+  max-width: 16ch;
+}
+
+.form-builder-login-scope .login-page__description {
+  max-width: 42ch;
+  color: var(--text);
+  line-height: 1.7;
+}
+
+.form-builder-login-scope .login-page__form {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1rem;
+  background: var(--surface-strong);
+}
+
+.form-builder-login-scope .login-page__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.form-builder-login-scope .login-page__actions {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 0.5rem;
+}
+
+@media (max-width: 900px) {
+  .form-builder-login-scope .login-page {
+    padding: 1rem;
+  }
+
+  .form-builder-login-scope .login-page__panel {
+    grid-template-columns: 1fr;
+  }
+
+  .form-builder-login-scope .login-page__intro,
+  .form-builder-login-scope .login-page__form {
+    padding: 1.5rem;
+  }
+
+  .form-builder-login-scope .login-page__intro {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .form-builder-login-scope .login-page__intro {
+    background:
+      radial-gradient(circle at top right, rgba(157, 123, 255, 0.18), transparent 38%),
+      linear-gradient(180deg, var(--surface-strong) 0%, var(--surface-subtle) 100%);
+  }
+}

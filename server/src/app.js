@@ -13,6 +13,7 @@ import libraryRoutes from "./routes/libraryRoutes.js";
 import payloadRoutes from "./routes/payloadRoutes.js";
 import enrichmentRoutes from "./routes/enrichmentRoutes.js";
 import seedRoutes from "./routes/seedRoutes.js";
+import simulationRoutes from "./routes/simulationRoutes.js";
 import orgRoutes from "./routes/orgRoutes.js";
 import videoRoutes from "./routes/videoRoutes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -60,6 +61,7 @@ app.use("/pre-generated", express.static(path.resolve(__dirname, "pre-generated"
 
 // ── Org generator (always mounted — this is the product that ships) ──────────
 app.use("/api/seed", seedRoutes);
+app.use("/api/simulation", simulationRoutes);
 // videoRoutes first: its specific paths (e.g. /video-providers) must win before
 // orgRoutes' catch-all GET /:slug treats them as an org slug.
 app.use("/api/orgs", videoRoutes);
