@@ -1,0 +1,343 @@
+.sim-page {
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.sim-head h1 {
+  font-size: 22px;
+  margin: 0 0 4px;
+}
+.sim-head p {
+  margin: 0 0 20px;
+  color: var(--text-muted, #6b7280);
+  font-size: 14px;
+}
+
+.sim-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 430px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 960px) {
+  .sim-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sim-card {
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e5ea);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.sim-card h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted, #6b7280);
+  margin: 0 0 12px;
+}
+
+.sim-card label {
+  display: block;
+  margin-bottom: 10px;
+}
+.sim-card label span {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+  margin-bottom: 4px;
+}
+.sim-card input,
+.sim-card select {
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  border: 1px solid var(--border, #d9dde3);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: inherit;
+}
+.sim-card select:disabled {
+  opacity: 0.55;
+}
+
+.sim-row {
+  display: flex;
+  gap: 10px;
+}
+.sim-row > * {
+  flex: 1;
+  min-width: 0;
+}
+
+.sim-presets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.sim-presets button {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #d9dde3);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.sim-presets button:hover {
+  border-color: #2c6cb0;
+  color: #2c6cb0;
+}
+
+.sim-badge {
+  display: inline-block;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #d9dde3);
+  color: var(--text-muted, #6b7280);
+  margin-bottom: 12px;
+  word-break: break-all;
+}
+.sim-badge.prod {
+  background: #fdeceb;
+  border-color: #b3261e;
+  color: #b3261e;
+  font-weight: 600;
+}
+
+.sim-hint {
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.sim-connect {
+  width: 100%;
+  font: inherit;
+  font-weight: 600;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid #2c6cb0;
+  background: transparent;
+  color: #2c6cb0;
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+.sim-connect:hover:not(:disabled) {
+  background: #2c6cb0;
+  color: #fff;
+}
+
+.sim-status {
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+.sim-status.ok {
+  color: #1a7f45;
+}
+.sim-status.err {
+  color: #b3261e;
+}
+.sim-status.info {
+  color: var(--text-muted, #6b7280);
+}
+
+.sim-derived {
+  list-style: none;
+  counter-reset: step;
+  padding: 0;
+  margin: 4px 0 12px;
+}
+.sim-derived li {
+  counter-increment: step;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0 6px 22px;
+  position: relative;
+  border-bottom: 1px solid var(--border, #eceef1);
+  font-size: 13px;
+}
+.sim-derived li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 6px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--border, #e2e5ea);
+  color: var(--text-muted, #6b7280);
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+}
+.sim-derived li:last-child {
+  border-bottom: none;
+}
+.sim-derived li span {
+  color: var(--text-muted, #6b7280);
+}
+.sim-derived li b {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sim-funnel {
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+  margin: 10px 0 0;
+  line-height: 1.6;
+}
+.sim-funnel b {
+  color: inherit;
+}
+
+.sim-actions {
+  display: flex;
+  gap: 10px;
+}
+.sim-actions button {
+  flex: 1;
+  font: inherit;
+  font-weight: 600;
+  padding: 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--border, #d9dde3);
+}
+.sim-actions .dry {
+  background: #2c6cb0;
+  border-color: #2c6cb0;
+  color: #fff;
+}
+.sim-actions .commit {
+  background: transparent;
+  border-color: #b3261e;
+  color: #b3261e;
+}
+.sim-actions .commit:hover:not(:disabled) {
+  background: #b3261e;
+  color: #fff;
+}
+.sim-actions button:disabled,
+.sim-connect:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sim-people-head {
+  font-size: 12px;
+  margin: 14px 0 6px;
+  color: var(--text-muted, #6b7280);
+}
+.sim-people-head:first-of-type {
+  margin-top: 4px;
+}
+
+.sim-people {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.sim-people th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #9aa4b0);
+  padding: 0 8px 4px 0;
+  border-bottom: 1px solid var(--border, #e2e5ea);
+}
+.sim-people th:not(:first-child):not(:nth-child(2)),
+.sim-people td:not(:first-child):not(:nth-child(2)) {
+  text-align: right;
+  width: 68px;
+  font-variant-numeric: tabular-nums;
+}
+.sim-people td {
+  padding: 5px 8px 5px 0;
+  border-bottom: 1px solid var(--border, #f1f3f5);
+}
+.sim-people td.muted {
+  color: var(--text-muted, #6b7280);
+  font-size: 11.5px;
+}
+.sim-people tr:last-child td {
+  border-bottom: none;
+}
+
+.sim-confirm {
+  border: 1px solid #b3261e;
+  background: #fdeceb;
+  border-radius: 10px;
+  padding: 14px 16px 16px;
+}
+.sim-confirm p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #7a1b15;
+}
+.sim-confirm .sim-actions .cancel {
+  background: transparent;
+  border-color: #c9a3a0;
+  color: #7a1b15;
+}
+.sim-confirm .sim-actions .commit {
+  background: #b3261e;
+  border-color: #b3261e;
+  color: #fff;
+}
+
+.sim-output {
+  padding: 12px 16px 16px;
+}
+.sim-log {
+  background: #10141a;
+  color: #d6dde6;
+  border-radius: 8px;
+  padding: 14px;
+  font: 12.5px/1.55 ui-monospace, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  height: 560px;
+  overflow-y: auto;
+  margin: 0;
+}
+
+.sim-summary {
+  margin-top: 14px;
+}
+.sim-summary h3 {
+  font-size: 13px;
+  margin: 0 0 8px;
+}
+.sim-summary ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 4px 16px;
+}
+.sim-summary li {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border, #eceef1);
+  padding: 3px 0;
+}
+.sim-summary li span {
+  color: var(--text-muted, #6b7280);
+}

@@ -7,6 +7,7 @@ import DeployResultPage from "./pages/DeployResultPage.jsx";
 import OrgSettingsPage from "./pages/OrgSettingsPage.jsx";
 import ItemsManagerPage from "./pages/ItemsManagerPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
+import SimulationPage from "./pages/SimulationPage.jsx";
 import { ITEM_GENERATOR_ENABLED } from "./featureFlags.js";
 
 export default function App() {
@@ -17,6 +18,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<OrgDashboardPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/simulation" element={<SimulationPage />} />
           <Route path="/orgs/new" element={<OrgGeneratorPage />} />
           <Route path="/orgs/:slug" element={<OrgDetailPage />} />
           <Route path="/orgs/:slug/deploy-result" element={<DeployResultPage />} />
