@@ -414,6 +414,19 @@ async function loadReference(api, branchIdOverride, onStep) {
   }
   if (!paymentTermId) onStep({ kind: 'note', text: 'No payment term resolved — invoices will be skipped.' });
 
+  // The bonus pool is `hoursSaved × baseHourlyRate × bonusPoolPercentage`, and a
+  // bonus-affecting expense is subtracted from it whole. Reading the branch's
+  // real constants is the only way to size those expenses sanely — at Attic's
+  // 32 × 0.1, saving twenty hours creates a $64 pool, so a $900 expense buries
+  // it far past anything the crew could have earned back.
+  const base = branch?.configuration?.baseConstants;
+  const bonusConstants = base
+    ? { baseHourlyRate: base.baseHourlyRate, bonusPoolPercentage: base.bonusPoolPercentage }
+    : null;
+  if (!bonusConstants) {
+    onStep({ kind: 'note', text: 'No bonus constants on the branch — bonus expenses will be skipped.' });
+  }
+
   return {
     branchId,
     people,
@@ -423,6 +436,7 @@ async function loadReference(api, branchIdOverride, onStep) {
     expenseTypeIds: expenseTypes ? unwrap(expenseTypes).map((t) => t.id) : [],
     taskTypeIds: taskTypes ? unwrap(taskTypes).map((t) => t.id) : [],
     paymentTermId,
+    bonusConstants,
   };
 }
 
@@ -747,6 +761,7 @@ export async function runSimulation(config, onStep) {
     // Worked hours must exist BEFORE the job closes: the bonus recalculation
     // reads `job_shifts` (a different table from `job_schedule_shifts`) and
     // refuses to run unless one carries a userId.
+    let hoursSaved = null;
     if (scheduled?.length) {
       await api.optional('worked hours', async () => {
         const past = scheduled.filter((d) => d.dayOffset <= 0);
@@ -789,6 +804,8 @@ export async function runSimulation(config, onStep) {
           }
           if (used >= slots) break;
         }
+        // What the bonus maths will see: budget minus the hours actually logged.
+        hoursSaved = e.laborHours - hoursEach * used;
         return summary.workedShifts;
       });
     }
@@ -808,21 +825,41 @@ export async function runSimulation(config, onStep) {
       }
     });
 
+    // A bonus-affecting expense is subtracted whole from the pool, so it is
+    // only worth marking one when there IS a pool — i.e. the crew finished
+    // under budget — and even then it has to be small relative to it. Ordinary
+    // job costs stay full-size; they just don't touch the bonus.
+    const pool = hoursSaved > 0 && ref.bonusConstants
+      ? hoursSaved * ref.bonusConstants.baseHourlyRate * ref.bonusConstants.bonusPoolPercentage
+      : 0;
+
     await api.optional('expenses', async () => {
       for (let i = 0; i < randInt(1, 3); i += 1) {
-        // A bonus-affecting expense resolves its target through
-        // findMostRecentClosedJobIdForProject — the job must literally be closed.
-        const affectsBonus = jobStatus === CLOSED_JOB_STATUS && Math.random() < 0.5;
+        // The target resolves through findMostRecentClosedJobIdForProject, so
+        // the job must literally be closed.
+        const affectsBonus =
+          jobStatus === CLOSED_JOB_STATUS && pool > 0 && i === 0 && Math.random() < 0.5;
+
+        let amount = randInt(120, 2500);
+        let bonusPercentage = null;
+        if (affectsBonus) {
+          // Take a 5–30% bite out of the pool, and derive the expense amount
+          // from that rather than the other way round.
+          bonusPercentage = pick([25, 50]);
+          const deduction = pool * (0.05 + Math.random() * 0.25);
+          amount = Math.max(20, Math.round(deduction / (bonusPercentage / 100)));
+        }
+
         await api.mutate('POST', '/project-expenses', {
           branchId: ref.branchId,
           projectId: e.projectId,
           expenseTypeId: pick(ref.expenseTypeIds),
-          amount: randInt(120, 2500),
+          amount,
           status: pick(['budgeted', 'confirmed', 'paid']),
           affectsBonus,
-          ...(affectsBonus ? { bonusPercentage: pick([25, 50, 75, 100]) } : {}),
+          ...(affectsBonus ? { bonusPercentage } : {}),
           description: pick(EXPENSE_NOTES),
-        }, `expense on project ${e.projectId}${affectsBonus ? ' (bonus)' : ''}`);
+        }, `expense on project ${e.projectId}${affectsBonus ? ` (bonus, pool $${pool.toFixed(0)})` : ''}`);
         summary.expenses += 1;
         if (affectsBonus) summary.bonusExpenses += 1;
       }
